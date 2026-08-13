@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fund Tracker</title>
+<style>
+  :root {
+    --navy: #1B2B5B;
+    --navy-light: #2d3f7a;
+    --bg: #f4f5f9;
+    --card-bg: #ffffff;
+    --text: #1c1e2b;
+    --text-muted: #6b7280;
+    --green: #1a7f4e;
+    --red: #b3261e;
+    --border: #e3e5ec;
+    --border-strong: #cdd1de;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+  a { color: var(--navy); }
+  button {
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 0.92rem;
+    font-weight: 600;
+    transition: opacity .15s ease, transform .05s ease;
+  }
+  button:active { transform: scale(0.98); }
+  button.primary { background: var(--navy); color: #fff; }
+  button.primary:hover { background: var(--navy-light); }
+  button.ghost { background: transparent; color: var(--navy); border: 1px solid var(--border-strong); }
+  button.ghost:hover { background: #eef0f7; }
+  button.danger { background: transparent; color: var(--red); border: 1px solid #f0d3d1; }
+  button.danger:hover { background: #fbeceb; }
+  button.small { padding: 5px 10px; font-size: 0.8rem; border-radius: 6px; }
+  input, select {
+    font-family: inherit;
+    font-size: 0.92rem;
+    padding: 8px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    background: #fff;
+    color: var(--text);
+    width: 100%;
+  }
+  input:focus, select:focus { outline: 2px solid var(--navy-light); outline-offset: -1px; }
+  label { font-size: 0.78rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; display: block; margin-bottom: 4px; }
+
+  header {
+    background: var(--navy);
+    color: #fff;
+    padding: 18px 20px 0 20px;
+  }
+  header .titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 980px;
+    margin: 0 auto;
+    padding-bottom: 14px;
+  }
+  header h1 { font-size: 1.25rem; letter-spacing: .01em; }
+  header h1 .sub { display:block; font-size: 0.72rem; font-weight: 400; opacity: 0.75; margin-top: 2px; letter-spacing: .02em; }
+
+  nav.tabs {
+    max-width: 980px;
+    margin: 0 auto;
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  nav.tabs::-webkit-scrollbar { display: none; }
+  nav.tabs .tab {
+    flex-shrink: 0;
+    padding: 9px 14px;
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: rgba(255,255,255,0.68);
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    white-space: nowrap;
+  }
+  nav.tabs .tab:hover { color: #fff; }
+  nav.tabs .tab.active { color: #fff; border-bottom-color: #fff; }
+  nav.tabs .tab.add { color: rgba(255,255,255,0.55); }
+
+  main {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 22px 18px 60px 18px;
+  }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+  .stat-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .stat-card .label { font-size: 0.74rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+  .stat-card .value { font-size: 1.55rem; font-weight: 700; margin-top: 4px; }
+  .stat-card.hero { background: var(--navy); color: #fff; }
+  .stat-card.hero .label { color: rgba(255,255,255,0.75); }
+  .stat-card.hero .value { font-size: 2rem; }
+  .stat-card .sub { font-size: 0.78rem; color: var(--text-muted); margin-top: 3px; }
+  .stat-card.hero .sub { color: rgba(255,255,255,0.7); }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .stat-card.hero .pos { color: #6fe3a5; }
+  .stat-card.hero .neg { color: #ff9b93; }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 1rem; margin-bottom: 12px; }
+  .card h3 { font-size: 0.88rem; color: var(--text-muted); margin-bottom: 10px; }
+
+  .fund-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 13px 4px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .fund-row:last-child { border-bottom: none; }
+  .fund-row:hover { background: #fafbfd; }
+  .fund-row .fname { font-weight: 600; }
+  .fund-row .fprovider { font-size: 0.78rem; color: var(--text-muted); }
+  .fund-row .fstats { text-align: right; }
+  .fund-row .fstats .rate { font-weight: 700; font-size: 1.02rem; }
+  .fund-row .fstats .val { font-size: 0.78rem; color: var(--text-muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  table th { text-align: left; font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; padding: 6px 8px; border-bottom: 1px solid var(--border-strong); }
+  table td { padding: 9px 8px; border-bottom: 1px solid var(--border); }
+  table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table tr:last-child td { border-bottom: none; }
+
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-top: 10px; }
+  .form-row .field { flex: 1; min-width: 120px; }
+  .form-row .field.grow2 { flex: 2; }
+
+  .fund-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .fund-header .titles h2 { font-size: 1.3rem; }
+  .fund-header .titles .provider { color: var(--text-muted); font-size: 0.88rem; margin-top: 2px; }
+  .fund-actions { display: flex; gap: 8px; }
+
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
+  .empty-state button { margin-top: 12px; }
+
+  .err { color: var(--red); font-size: 0.8rem; margin-top: 6px; display:none; }
+  .footer-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+  .muted-note { font-size: 0.78rem; color: var(--text-muted); margin-top: 8px; }
+
+  .as-of { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
+
+  @media (max-width: 560px) {
+    .stat-card.hero .value { font-size: 1.6rem; }
+    .fund-row .fstats .val { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="titlebar">
+    <h1>Fund Tracker<span class="sub">Investment record &amp; annualised return</span></h1>
+    <button class="ghost" style="color:#fff;border-color:rgba(255,255,255,0.4)" onclick="app.openSettings()">⚙</button>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+</header>
+
+<main id="app"></main>
+
+<script>
+(function () {
+  "use strict";
+
+  const STORAGE_KEY = "fundTrackerData";
+
+  // ---------- Data layer ----------
+  function loadData() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return { funds: [], currency: "£" };
+      const parsed = JSON.parse(raw);
+      if (!parsed.currency) parsed.currency = "£";
+      if (!parsed.funds) parsed.funds = [];
+      return parsed;
+    } catch (e) {
+      console.error("Failed to load data", e);
+      return { funds: [], currency: "£" };
+    }
+  }
+
+  function saveData() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+  }
+
+  function uid() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return "id-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+  }
+
+  function todayStr() {
+    const d = new Date();
+    return d.toISOString().slice(0, 10);
+  }
+
+  // ---------- XIRR (money-weighted annualised return) ----------
+  function daysBetween(d1, d2) {
+    return (new Date(d2) - new Date(d1)) / 86400000;
+  }
+
+  function xnpv(rate, cashflows) {
+    const d0 = cashflows[0].date;
+    return cashflows.reduce((sum, cf) => {
+      const t = daysBetween(d0, cf.date) / 365;
+      return sum + cf.amount / Math.pow(1 + rate, t);
+    }, 0);
+  }
+
+  function xirr(cashflowsIn) {
+    const cashflows = [...cashflowsIn].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const hasPos = cashflows.some((cf) => cf.amount > 0);
+    const hasNeg = cashflows.some((cf) => cf.amount < 0);
+    if (!hasPos || !hasNeg) return null;
+
+    let low = -0.9999, high = 10;
+    let fLow = xnpv(low, cashflows);
+    let fHigh = xnpv(high, cashflows);
+
+    let guard = 0;
+    while (fLow * fHigh > 0 && guard < 60) {
+      high *= 2;
+      fHigh = xnpv(high, cashflows);
+      guard++;
+      if (high > 1e7) break;
+    }
+    if (fLow * fHigh > 0) return null;
+
+    for (let i = 0; i < 200; i++) {
+      const mid = (low + high) / 2;
+      const fMid = xnpv(mid, cashflows);
+      if (Math.abs(fMid) < 1e-7) return mid;
+      if ((fLow < 0 && fMid < 0) || (fLow > 0 && fMid > 0)) {
+        low = mid; fLow = fMid;
+      } else {
+        high = mid; fHigh = fMid;
+      }
+    }
+    return (low + high) / 2;
+  }
+
+  function fundStats(fund) {
+    const totalInvested = fund.investments.reduce((s, i) => s + i.amount, 0);
+    const currentValue = typeof fund.currentValue === "number" ? fund.currentValue : null;
+    const gain = currentValue !== null ? currentValue - totalInvested : null;
+    const gainPct = currentValue !== null && totalInvested > 0 ? (gain / totalInvested) * 100 : null;
+    let rate = null;
+    if (currentValue !== null && fund.investments.length > 0) {
+      const cfs = fund.investments.map((i) => ({ date: i.date, amount: -i.amount }));
+      cfs.push({ date: fund.valuationDate || todayStr(), amount: currentValue });
+      rate = xirr(cfs);
+    }
+    return { totalInvested, currentValue, gain, gainPct, rate };
+  }
+
+  function portfolioStats(data) {
+    let totalInvested = 0, totalValue = 0;
+    const cfs = [];
+    let anyValue = false;
+    data.funds.forEach((fund) => {
+      fund.investments.forEach((i) => {
+        totalInvested += i.amount;
+        cfs.push({ date: i.date, amount: -i.amount });
+      });
+      if (typeof fund.currentValue === "number") {
+        totalValue += fund.currentValue;
+        anyValue = true;
+        cfs.push({ date: fund.valuationDate || todayStr(), amount: fund.currentValue });
+      }
+    });
+    const gain = anyValue ? totalValue - totalInvested : null;
+    const gainPct = anyValue && totalInvested > 0 ? (gain / totalInvested) * 100 : null;
+    const rate = cfs.length > 0 ? xirr(cfs) : null;
+    return { totalInvested, totalValue, gain, gainPct, rate, anyValue };
+  }
+
+  // ---------- Formatting ----------
+  function fmtMoney(n) {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    return state.data.currency + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function fmtPct(n) {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+  }
+  function fmtDate(d) {
+    if (!d) return "—";
+    const dt = new Date(d + "T00:00:00");
+    return dt.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  }
+  function pctClass(n) {
+    if (n === null || n === undefined || isNaN(n)) return "";
+    return n >= 0 ? "pos" : "neg";
+  }
+
+  // ---------- State ----------
+  const state = {
+    data: loadData(),
+    view: "overview", // "overview" | fund id
+  };
+
+  function findFund(id) {
+    return state.data.funds.find((f) => f.id === id);
+  }
+
+  // ---------- Rendering ----------
+  const appEl = document.getElementById("app");
+  const tabsEl = document.getElementById("tabs");
+
+  function render() {
+    renderTabs();
+    if (state.view === "overview") renderOverview();
+    else renderFund(state.view);
+  }
+
+  function renderTabs() {
+    let html = `<div class="tab ${state.view === "overview" ? "active" : ""}" onclick="app.goto('overview')">Overview</div>`;
+    state.data.funds.forEach((f) => {
+      html += `<div class="tab ${state.view === f.id ? "active" : ""}" onclick="app.goto('${f.id}')">${escapeHtml(f.name)}</div>`;
+    });
+    html += `<div class="tab add" onclick="app.addFund()">+ Add fund</div>`;
+    tabsEl.innerHTML = html;
+  }
+
+  function renderOverview() {
+    const data = state.data;
+    if (data.funds.length === 0) {
+      appEl.innerHTML = `
+        <div class="card empty-state">
+          <h2>No funds yet</h2>
+          <p class="muted-note">Add your first fund to start recording investments.</p>
+          <button class="primary" onclick="app.addFund()">+ Add your first fund</button>
+        </div>`;
+      return;
+    }
+
+    const p = portfolioStats(data);
+
+    let html = `<div class="stat-grid">
+      <div class="stat-card hero">
+        <div class="label">Grand total annualised return (XIRR)</div>
+        <div class="value ${pctClass(p.rate)}">${fmtPct(p.rate)}</div>
+        <div class="sub">Money-weighted, across all funds &amp; dates</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Total invested</div>
+        <div class="value">${fmtMoney(p.totalInvested)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Current value</div>
+        <div class="value">${p.anyValue ? fmtMoney(p.totalValue) : "—"}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Total gain</div>
+        <div class="value ${pctClass(p.gain)}">${p.anyValue ? fmtMoney(p.gain) : "—"}</div>
+        <div class="sub ${pctClass(p.gainPct)}">${fmtPct(p.gainPct)}</div>
+      </div>
+    </div>`;
+
+    html += `<div class="card"><h2>Your funds</h2>`;
+    data.funds.forEach((f) => {
+      const s = fundStats(f);
+      html += `<div class="fund-row" onclick="app.goto('${f.id}')">
+        <div>
+          <div class="fname">${escapeHtml(f.name)}</div>
+          <div class="fprovider">${escapeHtml(f.provider || "")}</div>
+        </div>
+        <div class="fstats">
+          <div class="rate ${pctClass(s.rate)}">${fmtPct(s.rate)}</div>
+          <div class="val">${fmtMoney(s.currentValue)} · invested ${fmtMoney(s.totalInvested)}</div>
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+
+    html += `<div class="footer-actions">
+      <button class="ghost" onclick="app.exportData()">Export backup (JSON)</button>
+      <button class="ghost" onclick="document.getElementById('importFile').click()">Import backup</button>
+    </div>
+    <input type="file" id="importFile" accept="application/json" style="display:none" onchange="app.importData(event)">`;
+
+    appEl.innerHTML = html;
+  }
+
+  function renderFund(id) {
+    const fund = findFund(id);
+    if (!fund) { state.view = "overview"; renderOverview(); return; }
+    const s = fundStats(fund);
+    const sortedInv = [...fund.investments].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    let html = `
+      <div class="fund-header">
+        <div class="titles">
+          <h2>${escapeHtml(fund.name)}</h2>
+          <div class="provider">${escapeHtml(fund.provider || "No provider set")}</div>
+        </div>
+        <div class="fund-actions">
+          <button class="ghost small" onclick="app.editFund('${fund.id}')">Edit details</button>
+          <button class="danger small" onclick="app.deleteFund('${fund.id}')">Delete fund</button>
+        </div>
+      </div>
+      ${fund.notes ? `<div class="muted-note" style="margin-bottom:16px;">${escapeHtml(fund.notes)}</div>` : ""}
+
+      <div class="stat-grid">
+        <div class="stat-card hero">
+          <div class="label">Annualised return (XIRR)</div>
+          <div class="value ${pctClass(s.rate)}">${fmtPct(s.rate)}</div>
+          <div class="sub">As of ${fmtDate(fund.valuationDate)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Total invested</div>
+          <div class="value">${fmtMoney(s.totalInvested)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Current value</div>
+          <div class="value">${s.currentValue !== null ? fmtMoney(s.currentValue) : "—"}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Gain</div>
+          <div class="value ${pctClass(s.gain)}">${s.gain !== null ? fmtMoney(s.gain) : "—"}</div>
+          <div class="sub ${pctClass(s.gainPct)}">${fmtPct(s.gainPct)}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Update current value</h2>
+        <p class="muted-note">Enter the fund's value whenever you check it — you don't need to update this every day. The annualised rate is recalculated using this value and its date.</p>
+        <div class="form-row">
+          <div class="field">
+            <label>Current value</label>
+            <input type="number" step="0.01" id="cvAmount" value="${fund.currentValue ?? ""}" placeholder="e.g. 5230.00">
+          </div>
+          <div class="field">
+            <label>As of date</label>
+            <input type="date" id="cvDate" value="${fund.valuationDate || todayStr()}">
+          </div>
+          <div class="field" style="flex:0;">
+            <button class="primary" onclick="app.updateCurrentValue('${fund.id}')">Save</button>
+          </div>
+        </div>
+        <div class="err" id="cvErr"></div>
+      </div>
+
+      <div class="card">
+        <h2>Investments</h2>
+        ${sortedInv.length === 0 ? `<p class="muted-note">No investments recorded yet — add the first top-up below.</p>` : `
+        <table>
+          <thead><tr><th>Date</th><th>Note</th><th style="text-align:right">Amount</th><th></th></tr></thead>
+          <tbody>
+            ${sortedInv.map((i) => `
+              <tr>
+                <td>${fmtDate(i.date)}</td>
+                <td>${escapeHtml(i.note || "")}</td>
+                <td class="num">${fmtMoney(i.amount)}</td>
+                <td style="text-align:right"><button class="danger small" onclick="app.deleteInvestment('${fund.id}','${i.id}')">Delete</button></td>
+              </tr>`).join("")}
+          </tbody>
+        </table>`}
+
+        <h3 style="margin-top:18px;">Add an investment</h3>
+        <div class="form-row">
+          <div class="field">
+            <label>Date</label>
+            <input type="date" id="invDate" value="${todayStr()}">
+          </div>
+          <div class="field">
+            <label>Amount</label>
+            <input type="number" step="0.01" id="invAmount" placeholder="e.g. 1000.00">
+          </div>
+          <div class="field grow2">
+            <label>Note (optional)</label>
+            <input type="text" id="invNote" placeholder="e.g. monthly top-up">
+          </div>
+          <div class="field" style="flex:0;">
+            <button class="primary" onclick="app.addInvestment('${fund.id}')">Add</button>
+          </div>
+        </div>
+        <div class="err" id="invErr"></div>
+      </div>
+    `;
+    appEl.innerHTML = html;
+  }
+
+  function escapeHtml(str) {
+    const d = document.createElement("div");
+    d.textContent = str == null ? "" : String(str);
+    return d.innerHTML;
+  }
+
+  // ---------- Actions ----------
+  const app = {
+    goto(id) {
+      state.view = id;
+      render();
+    },
+
+    addFund() {
+      const name = prompt("Fund name (e.g. \"Fidelity Global Index\"):");
+      if (!name || !name.trim()) return;
+      const provider = prompt("Provider / platform (e.g. \"Hargreaves Lansdown\") — optional:") || "";
+      const fund = {
+        id: uid(),
+        name: name.trim(),
+        provider: provider.trim(),
+        notes: "",
+        investments: [],
+        currentValue: null,
+        valuationDate: todayStr(),
+      };
+      state.data.funds.push(fund);
+      saveData();
+      state.view = fund.id;
+      render();
+    },
+
+    editFund(id) {
+      const fund = findFund(id);
+      if (!fund) return;
+      const name = prompt("Fund name:", fund.name);
+      if (name === null || !name.trim()) return;
+      const provider = prompt("Provider / platform:", fund.provider || "");
+      const notes = prompt("Notes (optional):", fund.notes || "");
+      fund.name = name.trim();
+      fund.provider = (provider || "").trim();
+      fund.notes = (notes || "").trim();
+      saveData();
+      render();
+    },
+
+    deleteFund(id) {
+      const fund = findFund(id);
+      if (!fund) return;
+      if (!confirm(`Delete "${fund.name}" and all its investment records? This cannot be undone.`)) return;
+      state.data.funds = state.data.funds.filter((f) => f.id !== id);
+      saveData();
+      state.view = "overview";
+      render();
+    },
+
+    addInvestment(fundId) {
+      const fund = findFund(fundId);
+      if (!fund) return;
+      const dateEl = document.getElementById("invDate");
+      const amountEl = document.getElementById("invAmount");
+      const noteEl = document.getElementById("invNote");
+      const errEl = document.getElementById("invErr");
+      const date = dateEl.value;
+      const amount = parseFloat(amountEl.value);
+
+      if (!date) { showErr(errEl, "Please enter a date."); return; }
+      if (isNaN(amount) || amount <= 0) { showErr(errEl, "Please enter an amount greater than 0."); return; }
+
+      fund.investments.push({ id: uid(), date, amount, note: noteEl.value.trim() });
+      saveData();
+      render();
+    },
+
+    deleteInvestment(fundId, invId) {
+      const fund = findFund(fundId);
+      if (!fund) return;
+      if (!confirm("Delete this investment record?")) return;
+      fund.investments = fund.investments.filter((i) => i.id !== invId);
+      saveData();
+      render();
+    },
+
+    updateCurrentValue(fundId) {
+      const fund = findFund(fundId);
+      if (!fund) return;
+      const amountEl = document.getElementById("cvAmount");
+      const dateEl = document.getElementById("cvDate");
+      const errEl = document.getElementById("cvErr");
+      const amount = parseFloat(amountEl.value);
+      const date = dateEl.value;
+
+      if (isNaN(amount) || amount < 0) { showErr(errEl, "Please enter a valid current value."); return; }
+      if (!date) { showErr(errEl, "Please enter the date this value applies to."); return; }
+
+      fund.currentValue = amount;
+      fund.valuationDate = date;
+      saveData();
+      render();
+    },
+
+    openSettings() {
+      const symbol = prompt("Currency symbol used across the app:", state.data.currency || "£");
+      if (symbol === null || !symbol.trim()) return;
+      state.data.currency = symbol.trim();
+      saveData();
+      render();
+    },
+
+    exportData() {
+      const blob = new Blob([JSON.stringify(state.data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `fund-tracker-backup-${todayStr()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+
+    importData(evt) {
+      const file = evt.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = JSON.parse(reader.result);
+          if (!parsed.funds || !Array.isArray(parsed.funds)) throw new Error("Invalid file format.");
+          if (!confirm("This will replace all current data with the imported backup. Continue?")) return;
+          state.data = parsed;
+          if (!state.data.currency) state.data.currency = "£";
+          saveData();
+          state.view = "overview";
+          render();
+        } catch (e) {
+          alert("Could not read that file as a Fund Tracker backup: " + e.message);
+        }
+        evt.target.value = "";
+      };
+      reader.readAsText(file);
+    },
+  };
+
+  function showErr(el, msg) {
+    el.textContent = msg;
+    el.style.display = "block";
+    setTimeout(() => { el.style.display = "none"; }, 4000);
+  }
+
+  window.app = app;
+  render();
+})();
+</script>
+</body>
+</html>
