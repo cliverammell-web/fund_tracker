@@ -106,6 +106,55 @@
   nav.tabs .tab.active { color: #fff; border-bottom-color: #fff; }
   nav.tabs .tab.add { color: rgba(255,255,255,0.55); }
 
+  /* Mobile nav (dropdown + add button) — hidden on desktop */
+  .mobile-nav {
+    display: none;
+    max-width: 980px;
+    margin: 0 auto;
+    padding-bottom: 12px;
+    gap: 8px;
+    align-items: center;
+  }
+  .mobile-nav select {
+    flex: 1;
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.28);
+    border-radius: 8px;
+    padding: 10px 34px 10px 12px;
+    font-family: inherit;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4 L6 8 L10 4' stroke='white' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 12px;
+  }
+  .mobile-nav select option { color: var(--text); background: #fff; font-weight: 500; }
+  .mobile-nav select:focus { outline: 2px solid #fff; outline-offset: 1px; }
+  .mobile-nav-add {
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.28);
+    border-radius: 8px;
+    width: 42px;
+    height: 42px;
+    font-size: 1.4rem;
+    font-weight: 400;
+    line-height: 1;
+    padding: 0;
+    flex-shrink: 0;
+  }
+  .mobile-nav-add:hover { background: rgba(255,255,255,0.2); }
+
+  @media (max-width: 640px) {
+    nav.tabs { display: none; }
+    .mobile-nav { display: flex; }
+  }
+
   main {
     max-width: 980px;
     margin: 0 auto;
@@ -247,6 +296,7 @@
     <button class="ghost" style="color:#fff;border-color:rgba(255,255,255,0.4)" onclick="app.openSettings()">⚙</button>
   </div>
   <nav class="tabs" id="tabs"></nav>
+  <div class="mobile-nav" id="mobileNav"></div>
 </header>
 
 <main id="app"></main>
@@ -266,6 +316,19 @@
       const parsed = JSON.parse(raw);
       if (!parsed.currency) parsed.currency = "£";
       if (!parsed.funds) parsed.funds = [];
+      // Migrate legacy single currentValue/valuationDate into valuations[] history
+      parsed.funds.forEach((fund) => {
+        if (!Array.isArray(fund.valuations)) fund.valuations = [];
+        if (typeof fund.currentValue === "number" && fund.valuations.length === 0) {
+          fund.valuations.push({
+            id: uid(),
+            date: fund.valuationDate || todayStr(),
+            value: fund.currentValue,
+          });
+        }
+        delete fund.currentValue;
+        delete fund.valuationDate;
+      });
       return parsed;
     } catch (e) {
       console.error("Failed to load data", e);
@@ -332,19 +395,26 @@
     return (low + high) / 2;
   }
 
+  function latestValuation(fund) {
+    if (!fund.valuations || fund.valuations.length === 0) return null;
+    return [...fund.valuations].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+  }
+
   function fundStats(fund) {
     const totalInvested = fund.investments.reduce((s, i) => s + i.amount, 0);
-    const currentValue = typeof fund.currentValue === "number" ? fund.currentValue : null;
+    const latest = latestValuation(fund);
+    const currentValue = latest ? latest.value : null;
+    const valuationDate = latest ? latest.date : null;
     const gain = currentValue !== null ? currentValue - totalInvested : null;
     const gainPct = currentValue !== null && totalInvested > 0 ? (gain / totalInvested) * 100 : null;
     let rate = null;
     if (currentValue !== null && fund.investments.length > 0) {
       const cfs = fund.investments.map((i) => ({ date: i.date, amount: -i.amount }));
-      cfs.push({ date: fund.valuationDate || todayStr(), amount: currentValue });
+      cfs.push({ date: valuationDate || todayStr(), amount: currentValue });
       const r = xirr(cfs);
       if (r !== null) rate = r * 100;
     }
-    return { totalInvested, currentValue, gain, gainPct, rate };
+    return { totalInvested, currentValue, valuationDate, gain, gainPct, rate };
   }
 
   function portfolioStats(data) {
@@ -356,10 +426,11 @@
         totalInvested += i.amount;
         cfs.push({ date: i.date, amount: -i.amount });
       });
-      if (typeof fund.currentValue === "number") {
-        totalValue += fund.currentValue;
+      const latest = latestValuation(fund);
+      if (latest) {
+        totalValue += latest.value;
         anyValue = true;
-        cfs.push({ date: fund.valuationDate || todayStr(), amount: fund.currentValue });
+        cfs.push({ date: latest.date, amount: latest.value });
       }
     });
     const gain = anyValue ? totalValue - totalInvested : null;
@@ -391,6 +462,116 @@
     return n >= 0 ? "pos" : "neg";
   }
 
+  // ---------- Chart ----------
+  function niceTickStep(range, targetTicks) {
+    const rough = range / targetTicks;
+    const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / pow;
+    let step;
+    if (norm < 1.5) step = 1;
+    else if (norm < 3) step = 2;
+    else if (norm < 7) step = 5;
+    else step = 10;
+    return step * pow;
+  }
+
+  function renderGrowthChart(fund) {
+    const invs = [...fund.investments].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const vals = [...(fund.valuations || [])].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    if (invs.length === 0 && vals.length === 0) {
+      return `<p class="muted-note" style="text-align:center;padding:24px 0;">Add investments and value updates to see the growth chart.</p>`;
+    }
+
+    // Cumulative-invested series
+    let running = 0;
+    const investedPoints = invs.map((i) => {
+      running += i.amount;
+      return { date: i.date, value: running };
+    });
+
+    // Time & value range across both series
+    const allDates = [...investedPoints.map((p) => p.date), ...vals.map((v) => v.date)];
+    const allValues = [0, ...investedPoints.map((p) => p.value), ...vals.map((v) => v.value)];
+    const tMs = allDates.map((d) => new Date(d).getTime());
+    let minT = Math.min(...tMs);
+    let maxT = Math.max(...tMs);
+    if (minT === maxT) { minT -= 86400000 * 7; maxT += 86400000 * 7; } // pad if only one date
+    const maxV = Math.max(...allValues);
+    const yStep = niceTickStep(maxV, 4);
+    const yMax = Math.ceil(maxV / yStep) * yStep;
+
+    const W = 720, H = 300;
+    const pad = { l: 66, r: 16, t: 14, b: 40 };
+    const plotW = W - pad.l - pad.r;
+    const plotH = H - pad.t - pad.b;
+
+    const xPx = (dateStr) => pad.l + ((new Date(dateStr).getTime() - minT) / (maxT - minT)) * plotW;
+    const yPx = (v) => pad.t + plotH - (v / yMax) * plotH;
+
+    // Y-axis grid & labels
+    const yTicks = [];
+    for (let v = 0; v <= yMax + 0.001; v += yStep) yTicks.push(v);
+
+    // X-axis: choose 3–5 evenly spaced tick dates
+    const xTickCount = 4;
+    const xTicks = [];
+    for (let i = 0; i <= xTickCount; i++) {
+      const t = minT + ((maxT - minT) * i) / xTickCount;
+      xTicks.push(new Date(t));
+    }
+    const shortDate = (d) => d.toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+
+    // Stepped invested path
+    let investedPath = "";
+    if (investedPoints.length > 0) {
+      investedPath = `M ${xPx(investedPoints[0].date)} ${yPx(0)}`;
+      investedPoints.forEach((p, i) => {
+        investedPath += ` L ${xPx(p.date)} ${yPx(p.value)}`;
+        if (i < investedPoints.length - 1) {
+          investedPath += ` L ${xPx(investedPoints[i + 1].date)} ${yPx(p.value)}`;
+        }
+      });
+      const lastP = investedPoints[investedPoints.length - 1];
+      if (new Date(lastP.date).getTime() < maxT) {
+        investedPath += ` L ${pad.l + plotW} ${yPx(lastP.value)}`;
+      }
+    }
+
+    // Value line
+    let valuePath = "";
+    vals.forEach((v, i) => {
+      valuePath += (i === 0 ? "M" : " L") + ` ${xPx(v.date)} ${yPx(v.value)}`;
+    });
+
+    const cur = state.data.currency;
+    const svg = `
+      <svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible;">
+        ${yTicks.map((v) => `
+          <line x1="${pad.l}" x2="${W - pad.r}" y1="${yPx(v)}" y2="${yPx(v)}" stroke="#e3e5ec" stroke-width="1"/>
+          <text x="${pad.l - 8}" y="${yPx(v) + 4}" text-anchor="end" font-size="12" fill="#6b7280" font-family="inherit">${cur}${v >= 1000 ? (v / 1000).toFixed(v % 1000 === 0 ? 0 : 1) + "k" : v.toLocaleString()}</text>
+        `).join("")}
+        ${xTicks.map((d) => `
+          <text x="${xPx(d.toISOString().slice(0, 10))}" y="${H - pad.b + 18}" text-anchor="middle" font-size="12" fill="#6b7280" font-family="inherit">${shortDate(d)}</text>
+        `).join("")}
+        <line x1="${pad.l}" x2="${W - pad.r}" y1="${pad.t + plotH}" y2="${pad.t + plotH}" stroke="#cdd1de" stroke-width="1"/>
+        ${investedPath ? `<path d="${investedPath}" stroke="#6b7280" stroke-width="2" fill="none" stroke-dasharray="5 4"/>` : ""}
+        ${valuePath ? `<path d="${valuePath}" stroke="#1B2B5B" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
+        ${vals.map((v) => `<circle cx="${xPx(v.date)}" cy="${yPx(v.value)}" r="4" fill="#1B2B5B"/>`).join("")}
+      </svg>
+      <div style="display:flex;gap:22px;justify-content:center;margin-top:10px;font-size:0.82rem;color:var(--text-muted);flex-wrap:wrap;">
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#6b7280" stroke-width="2" stroke-dasharray="5 4"/></svg>
+          Total invested
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#1B2B5B" stroke-width="2.5"/></svg>
+          Value
+        </span>
+      </div>`;
+    return svg;
+  }
+
   // ---------- State ----------
   const state = {
     data: loadData(),
@@ -405,6 +586,7 @@
   // ---------- Rendering ----------
   const appEl = document.getElementById("app");
   const tabsEl = document.getElementById("tabs");
+  const mobileNavEl = document.getElementById("mobileNav");
   const modalRoot = document.getElementById("modalRoot");
 
   function render() {
@@ -451,12 +633,25 @@
   }
 
   function renderTabs() {
+    // Desktop tab bar
     let html = `<div class="tab ${state.view === "overview" ? "active" : ""}" onclick="app.goto('overview')">Overview</div>`;
     state.data.funds.forEach((f) => {
       html += `<div class="tab ${state.view === f.id ? "active" : ""}" onclick="app.goto('${f.id}')">${escapeHtml(f.name)}</div>`;
     });
     html += `<div class="tab add" onclick="app.addFund()">+ Add fund</div>`;
     tabsEl.innerHTML = html;
+
+    // Mobile nav — dropdown + add button
+    let options = `<option value="overview">Overview</option>`;
+    state.data.funds.forEach((f) => {
+      options += `<option value="${f.id}">${escapeHtml(f.name)}</option>`;
+    });
+    const currentValue = state.view === "overview" ? "overview" : state.view;
+    mobileNavEl.innerHTML = `
+      <select aria-label="Select page" onchange="app.goto(this.value)">${options}</select>
+      <button class="mobile-nav-add" onclick="app.addFund()" aria-label="Add fund" title="Add fund">+</button>
+    `;
+    mobileNavEl.querySelector("select").value = currentValue;
   }
 
   function renderOverview() {
@@ -518,6 +713,7 @@
     if (!fund) { state.view = "overview"; renderOverview(); return; }
     const s = fundStats(fund);
     const sortedInv = [...fund.investments].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const sortedVals = [...(fund.valuations || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
 
     let html = `
       <div class="fund-header">
@@ -536,7 +732,7 @@
         <div class="stat-card hero">
           <div class="label">Annualised return (XIRR)</div>
           <div class="value ${pctClass(s.rate)}">${fmtPct(s.rate)}</div>
-          <div class="sub">As of ${fmtDate(fund.valuationDate)}</div>
+          <div class="sub">As of ${fmtDate(s.valuationDate)}</div>
         </div>
         <div class="stat-card">
           <div class="label">Total invested</div>
@@ -554,22 +750,39 @@
       </div>
 
       <div class="card">
-        <h2>Update current value</h2>
-        <p class="muted-note">Enter the fund's value whenever you check it — you don't need to update this every day. The annualised rate is recalculated using this value and its date.</p>
+        <h2>Growth over time</h2>
+        ${renderGrowthChart(fund)}
+      </div>
+
+      <div class="card">
+        <h2>Value history</h2>
+        <p class="muted-note">Each time you check the fund's value, add it here. The app keeps every valuation to build your growth chart, and uses the most recent one for the current value and annualised return.</p>
         <div class="form-row">
           <div class="field">
-            <label>Current value</label>
-            <input type="number" step="0.01" id="cvAmount" value="${fund.currentValue ?? ""}" placeholder="e.g. 5230.00">
+            <label>Value</label>
+            <input type="number" step="0.01" id="valAmount" placeholder="e.g. 5230.00">
           </div>
           <div class="field">
             <label>As of date</label>
-            <input type="date" id="cvDate" value="${fund.valuationDate || todayStr()}">
+            <input type="date" id="valDate" value="${todayStr()}">
           </div>
           <div class="field" style="flex:0;">
-            <button class="primary" onclick="app.updateCurrentValue('${fund.id}')">Save</button>
+            <button class="primary" onclick="app.addValuation('${fund.id}')">Add</button>
           </div>
         </div>
-        <div class="err" id="cvErr"></div>
+        <div class="err" id="valErr"></div>
+        ${sortedVals.length === 0 ? `<p class="muted-note" style="margin-top:14px;">No value updates recorded yet.</p>` : `
+        <table style="margin-top:14px;">
+          <thead><tr><th>Date</th><th style="text-align:right">Value</th><th></th></tr></thead>
+          <tbody>
+            ${sortedVals.map((v) => `
+              <tr>
+                <td>${fmtDate(v.date)}</td>
+                <td class="num">${fmtMoney(v.value)}</td>
+                <td style="text-align:right"><button class="danger small" onclick="app.deleteValuation('${fund.id}','${v.id}')">Delete</button></td>
+              </tr>`).join("")}
+          </tbody>
+        </table>`}
       </div>
 
       <div class="card">
@@ -635,8 +848,7 @@
         provider: provider.trim(),
         notes: "",
         investments: [],
-        currentValue: null,
-        valuationDate: todayStr(),
+        valuations: [],
       };
       state.data.funds.push(fund);
       saveData();
@@ -695,20 +907,29 @@
       render();
     },
 
-    updateCurrentValue(fundId) {
+    addValuation(fundId) {
       const fund = findFund(fundId);
       if (!fund) return;
-      const amountEl = document.getElementById("cvAmount");
-      const dateEl = document.getElementById("cvDate");
-      const errEl = document.getElementById("cvErr");
+      const amountEl = document.getElementById("valAmount");
+      const dateEl = document.getElementById("valDate");
+      const errEl = document.getElementById("valErr");
       const amount = parseFloat(amountEl.value);
       const date = dateEl.value;
 
-      if (isNaN(amount) || amount < 0) { showErr(errEl, "Please enter a valid current value."); return; }
+      if (isNaN(amount) || amount < 0) { showErr(errEl, "Please enter a valid value."); return; }
       if (!date) { showErr(errEl, "Please enter the date this value applies to."); return; }
 
-      fund.currentValue = amount;
-      fund.valuationDate = date;
+      if (!Array.isArray(fund.valuations)) fund.valuations = [];
+      fund.valuations.push({ id: uid(), date, value: amount });
+      saveData();
+      render();
+    },
+
+    deleteValuation(fundId, valId) {
+      const fund = findFund(fundId);
+      if (!fund) return;
+      if (!confirm("Delete this valuation record?")) return;
+      fund.valuations = (fund.valuations || []).filter((v) => v.id !== valId);
       saveData();
       render();
     },
