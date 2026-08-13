@@ -333,7 +333,8 @@
     if (currentValue !== null && fund.investments.length > 0) {
       const cfs = fund.investments.map((i) => ({ date: i.date, amount: -i.amount }));
       cfs.push({ date: fund.valuationDate || todayStr(), amount: currentValue });
-      rate = xirr(cfs);
+      const r = xirr(cfs);
+      if (r !== null) rate = r * 100;
     }
     return { totalInvested, currentValue, gain, gainPct, rate };
   }
@@ -355,7 +356,11 @@
     });
     const gain = anyValue ? totalValue - totalInvested : null;
     const gainPct = anyValue && totalInvested > 0 ? (gain / totalInvested) * 100 : null;
-    const rate = cfs.length > 0 ? xirr(cfs) : null;
+    let rate = null;
+    if (cfs.length > 0) {
+      const r = xirr(cfs);
+      if (r !== null) rate = r * 100;
+    }
     return { totalInvested, totalValue, gain, gainPct, rate, anyValue };
   }
 
