@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fund Tracker</title>
+<meta name="description" content="Record investments across multiple funds and see your money-weighted annualised return (XIRR) for each fund and your whole portfolio.">
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#1B2B5B">
+<link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32.png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fund Tracker">
 <style>
   :root {
     --navy: #1B2B5B;
@@ -770,6 +778,19 @@
 
   window.app = app;
   render();
+
+  // Register service worker for offline capability and installability
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+    });
+  }
 })();
 </script>
 </body>
