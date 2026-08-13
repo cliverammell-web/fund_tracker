@@ -178,6 +178,53 @@
 
   .as-of { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
 
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 20, 40, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 20px;
+  }
+  .modal {
+    background: #fff;
+    border-radius: 14px;
+    padding: 22px 24px 24px 24px;
+    max-width: 420px;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+  }
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 18px;
+  }
+  .modal-header h2 { font-size: 1.05rem; }
+  .modal-close {
+    background: transparent;
+    border: none;
+    font-size: 1.4rem;
+    line-height: 1;
+    color: var(--text-muted);
+    padding: 2px 6px;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-section { margin-bottom: 22px; }
+  .modal-section:last-child { margin-bottom: 0; }
+  .modal-section h3 {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    margin-bottom: 10px;
+  }
+  .modal-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
   @media (max-width: 560px) {
     .stat-card.hero .value { font-size: 1.6rem; }
     .fund-row .fstats .val { display: none; }
@@ -195,6 +242,7 @@
 </header>
 
 <main id="app"></main>
+<div id="modalRoot"></div>
 
 <script>
 (function () {
@@ -334,6 +382,7 @@
   const state = {
     data: loadData(),
     view: "overview", // "overview" | fund id
+    showSettings: false,
   };
 
   function findFund(id) {
@@ -343,11 +392,49 @@
   // ---------- Rendering ----------
   const appEl = document.getElementById("app");
   const tabsEl = document.getElementById("tabs");
+  const modalRoot = document.getElementById("modalRoot");
 
   function render() {
     renderTabs();
     if (state.view === "overview") renderOverview();
     else renderFund(state.view);
+    renderSettingsModal();
+  }
+
+  function renderSettingsModal() {
+    if (!state.showSettings) { modalRoot.innerHTML = ""; return; }
+    modalRoot.innerHTML = `
+      <div class="modal-backdrop" onclick="if(event.target===this) app.closeSettings()">
+        <div class="modal">
+          <div class="modal-header">
+            <h2>Settings</h2>
+            <button class="modal-close" onclick="app.closeSettings()">&times;</button>
+          </div>
+
+          <div class="modal-section">
+            <h3>Currency</h3>
+            <div class="form-row">
+              <div class="field">
+                <input type="text" id="settingsCurrency" value="${escapeHtml(state.data.currency || "£")}" maxlength="3">
+              </div>
+              <div class="field" style="flex:0;">
+                <button class="primary" onclick="app.saveCurrency()">Save</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-section">
+            <h3>Backup &amp; restore</h3>
+            <p class="muted-note" style="margin-top:0;margin-bottom:12px;">Your data lives only in this browser. Export a backup regularly, and use Import to bring data across when you move to a new browser, device, or hosted copy of this app.</p>
+            <div class="modal-actions">
+              <button class="ghost" onclick="app.exportData()">Export backup (JSON)</button>
+              <button class="ghost" onclick="document.getElementById('importFile').click()">Import backup</button>
+            </div>
+            <input type="file" id="importFile" accept="application/json" style="display:none" onchange="app.importData(event)">
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   function renderTabs() {
@@ -409,12 +496,6 @@
       </div>`;
     });
     html += `</div>`;
-
-    html += `<div class="footer-actions">
-      <button class="ghost" onclick="app.exportData()">Export backup (JSON)</button>
-      <button class="ghost" onclick="document.getElementById('importFile').click()">Import backup</button>
-    </div>
-    <input type="file" id="importFile" accept="application/json" style="display:none" onchange="app.importData(event)">`;
 
     appEl.innerHTML = html;
   }
@@ -620,9 +701,20 @@
     },
 
     openSettings() {
-      const symbol = prompt("Currency symbol used across the app:", state.data.currency || "£");
-      if (symbol === null || !symbol.trim()) return;
-      state.data.currency = symbol.trim();
+      state.showSettings = true;
+      render();
+    },
+
+    closeSettings() {
+      state.showSettings = false;
+      render();
+    },
+
+    saveCurrency() {
+      const el = document.getElementById("settingsCurrency");
+      const val = el.value.trim();
+      if (!val) return;
+      state.data.currency = val;
       saveData();
       render();
     },
@@ -650,6 +742,7 @@
           if (!state.data.currency) state.data.currency = "£";
           saveData();
           state.view = "overview";
+          state.showSettings = false;
           render();
         } catch (e) {
           alert("Could not read that file as a Fund Tracker backup: " + e.message);
@@ -665,6 +758,10 @@
     el.style.display = "block";
     setTimeout(() => { el.style.display = "none"; }, 4000);
   }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.showSettings) app.closeSettings();
+  });
 
   window.app = app;
   render();
