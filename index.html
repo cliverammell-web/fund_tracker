@@ -181,6 +181,26 @@
   .stat-card.hero { background: var(--navy); color: #fff; }
   .stat-card.hero .label { color: rgba(255,255,255,0.75); }
   .stat-card.hero .value { font-size: 2rem; }
+  .stat-card.clickable {
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.15s ease;
+    position: relative;
+  }
+  .stat-card.clickable:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+  .stat-card.clickable::after {
+    content: "›";
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    font-size: 1.2rem;
+    color: var(--text-muted);
+    line-height: 1;
+    opacity: 0.55;
+  }
+  .stat-card.hero.clickable::after { color: rgba(255,255,255,0.65); }
   .stat-card .sub { font-size: 0.78rem; color: var(--text-muted); margin-top: 3px; }
   .stat-card.hero .sub { color: rgba(255,255,255,0.7); }
   .pos { color: var(--green); }
@@ -298,6 +318,45 @@
   .dialog-field.has-error textarea { border-color: var(--red); }
   .dialog-field.has-error .field-error { display: block; }
 
+  .breakdown-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  .breakdown-table th {
+    text-align: left;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-strong);
+    font-weight: 600;
+  }
+  .breakdown-table th.num, .breakdown-table td.num { text-align: right; }
+  .breakdown-table td {
+    padding: 10px 8px;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+    vertical-align: middle;
+  }
+  .breakdown-table tr.breakdown-row { cursor: pointer; }
+  .breakdown-table tr.breakdown-row:hover td { background: #fafbfd; }
+  .breakdown-table .fund-name-cell { font-weight: 500; line-height: 1.3; }
+  .breakdown-table .fund-provider { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; font-weight: 400; }
+  .breakdown-table tr.total-row td {
+    border-top: 2px solid var(--border-strong);
+    border-bottom: none;
+    font-weight: 700;
+    padding-top: 12px;
+  }
+  .breakdown-hint { font-size: 0.78rem; color: var(--text-muted); margin: 12px 0 0 0; text-align: center; }
+
+  @media (max-width: 500px) {
+    .modal { padding: 20px 16px; }
+    .breakdown-table { font-size: 0.82rem; }
+    .breakdown-table td, .breakdown-table th { padding: 9px 5px; }
+    .breakdown-table th:first-child, .breakdown-table td:first-child { padding-left: 2px; }
+    .breakdown-table th:last-child, .breakdown-table td:last-child { padding-right: 2px; }
+    .breakdown-table .fund-provider { font-size: 0.7rem; }
+  }
+
   @media (max-width: 560px) {
     .stat-card.hero .value { font-size: 1.6rem; }
     .fund-row .fstats .val { display: none; }
@@ -318,6 +377,7 @@
 <main id="app"></main>
 <div id="modalRoot"></div>
 <div id="dialogRoot"></div>
+<div id="breakdownRoot"></div>
 
 <script>
 (function () {
@@ -595,6 +655,7 @@
     view: "overview", // "overview" | fund id
     showSettings: false,
     dialog: null,
+    breakdown: null, // "invested" | "value" | "gain" | "xirr"
   };
 
   function findFund(id) {
@@ -607,6 +668,7 @@
   const mobileNavEl = document.getElementById("mobileNav");
   const modalRoot = document.getElementById("modalRoot");
   const dialogRoot = document.getElementById("dialogRoot");
+  const breakdownRoot = document.getElementById("breakdownRoot");
 
   function render() {
     renderTabs();
@@ -614,6 +676,7 @@
     else renderFund(state.view);
     renderSettingsModal();
     renderDialog();
+    renderBreakdown();
   }
 
   function renderDialog() {
@@ -669,6 +732,101 @@
         if (first) { first.focus(); if (first.select) first.select(); }
       }, 30);
     }
+  }
+
+  function renderBreakdown() {
+    if (!state.breakdown) { breakdownRoot.innerHTML = ""; return; }
+    const type = state.breakdown;
+    const funds = state.data.funds;
+
+    // Build a row per fund with the metric we care about
+    const rows = funds.map((f) => {
+      const s = fundStats(f);
+      return { fund: f, stats: s };
+    });
+
+    let title = "", headers = "", body = "", totalRow = "";
+
+    if (type === "invested") {
+      title = "Total invested — breakdown";
+      const total = rows.reduce((sum, r) => sum + r.stats.totalInvested, 0);
+      const sorted = [...rows].sort((a, b) => b.stats.totalInvested - a.stats.totalInvested);
+      headers = `<th>Fund</th><th class="num">Invested</th><th class="num">Share</th>`;
+      body = sorted.map((r) => {
+        const share = total > 0 ? (r.stats.totalInvested / total) * 100 : 0;
+        return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
+          <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
+          <td class="num">${fmtMoney(r.stats.totalInvested)}</td>
+          <td class="num">${share.toFixed(1)}%</td>
+        </tr>`;
+      }).join("");
+      totalRow = `<tr class="total-row"><td>Total</td><td class="num">${fmtMoney(total)}</td><td class="num">100.0%</td></tr>`;
+
+    } else if (type === "value") {
+      title = "Current value — breakdown";
+      const withVal = rows.filter((r) => r.stats.currentValue !== null);
+      const total = withVal.reduce((sum, r) => sum + r.stats.currentValue, 0);
+      const sorted = [...rows].sort((a, b) => (b.stats.currentValue || 0) - (a.stats.currentValue || 0));
+      headers = `<th>Fund</th><th class="num">Value</th><th class="num">Share</th>`;
+      body = sorted.map((r) => {
+        const hasVal = r.stats.currentValue !== null;
+        const share = hasVal && total > 0 ? (r.stats.currentValue / total) * 100 : null;
+        return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
+          <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
+          <td class="num">${hasVal ? fmtMoney(r.stats.currentValue) : "—"}</td>
+          <td class="num">${share !== null ? share.toFixed(1) + "%" : "—"}</td>
+        </tr>`;
+      }).join("");
+      totalRow = `<tr class="total-row"><td>Total</td><td class="num">${fmtMoney(total)}</td><td class="num">100.0%</td></tr>`;
+
+    } else if (type === "gain") {
+      title = "Total gain — breakdown";
+      const withVal = rows.filter((r) => r.stats.gain !== null);
+      const totalGain = withVal.reduce((sum, r) => sum + r.stats.gain, 0);
+      const sorted = [...rows].sort((a, b) => (b.stats.gain === null ? -Infinity : b.stats.gain) - (a.stats.gain === null ? -Infinity : a.stats.gain));
+      headers = `<th>Fund</th><th class="num">Gain</th><th class="num">Gain %</th>`;
+      body = sorted.map((r) => {
+        const g = r.stats.gain, gp = r.stats.gainPct;
+        return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
+          <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
+          <td class="num ${pctClass(g)}">${g !== null ? fmtMoney(g) : "—"}</td>
+          <td class="num ${pctClass(gp)}">${fmtPct(gp)}</td>
+        </tr>`;
+      }).join("");
+      totalRow = `<tr class="total-row"><td>Total</td><td class="num ${pctClass(totalGain)}">${fmtMoney(totalGain)}</td><td></td></tr>`;
+
+    } else if (type === "xirr") {
+      title = "Annualised return — breakdown";
+      const sorted = [...rows].sort((a, b) => (b.stats.rate === null ? -Infinity : b.stats.rate) - (a.stats.rate === null ? -Infinity : a.stats.rate));
+      headers = `<th>Fund</th><th class="num">Invested</th><th class="num">Return (XIRR)</th>`;
+      body = sorted.map((r) => {
+        return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
+          <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
+          <td class="num">${fmtMoney(r.stats.totalInvested)}</td>
+          <td class="num ${pctClass(r.stats.rate)}">${fmtPct(r.stats.rate)}</td>
+        </tr>`;
+      }).join("");
+      const p = portfolioStats(state.data);
+      totalRow = `<tr class="total-row"><td>Portfolio total</td><td class="num">${fmtMoney(p.totalInvested)}</td><td class="num ${pctClass(p.rate)}">${fmtPct(p.rate)}</td></tr>`;
+    }
+
+    breakdownRoot.innerHTML = `
+      <div class="modal-backdrop" role="dialog" aria-modal="true" onclick="if(event.target===this) app.closeBreakdown()">
+        <div class="modal" style="max-width: 560px;">
+          <div class="modal-header">
+            <h2>${escapeHtml(title)}</h2>
+            <button class="modal-close" onclick="app.closeBreakdown()" aria-label="Close">&times;</button>
+          </div>
+          ${funds.length === 0
+            ? `<p class="muted-note">No funds yet.</p>`
+            : `<table class="breakdown-table">
+                <thead><tr>${headers}</tr></thead>
+                <tbody>${body}${totalRow}</tbody>
+              </table>
+              <p class="breakdown-hint">Tap any fund to open it.</p>`
+          }
+        </div>
+      </div>`;
   }
 
   function renderSettingsModal() {
@@ -744,20 +902,20 @@
     const p = portfolioStats(data);
 
     let html = `<div class="stat-grid">
-      <div class="stat-card hero">
+      <div class="stat-card hero clickable" onclick="app.showBreakdown('xirr')">
         <div class="label">Grand total annualised return (XIRR)</div>
         <div class="value ${pctClass(p.rate)}">${fmtPct(p.rate)}</div>
         <div class="sub">Money-weighted, across all funds &amp; dates</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card clickable" onclick="app.showBreakdown('invested')">
         <div class="label">Total invested</div>
         <div class="value">${fmtMoney(p.totalInvested)}</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card clickable" onclick="app.showBreakdown('value')">
         <div class="label">Current value</div>
         <div class="value">${p.anyValue ? fmtMoney(p.totalValue) : "—"}</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card clickable" onclick="app.showBreakdown('gain')">
         <div class="label">Total gain</div>
         <div class="value ${pctClass(p.gain)}">${p.anyValue ? fmtMoney(p.gain) : "—"}</div>
         <div class="sub ${pctClass(p.gainPct)}">${fmtPct(p.gainPct)}</div>
@@ -909,6 +1067,22 @@
   // ---------- Actions ----------
   const app = {
     goto(id) {
+      state.view = id;
+      render();
+    },
+
+    showBreakdown(type) {
+      state.breakdown = type;
+      render();
+    },
+
+    closeBreakdown() {
+      state.breakdown = null;
+      render();
+    },
+
+    gotoFromBreakdown(id) {
+      state.breakdown = null;
       state.view = id;
       render();
     },
@@ -1172,6 +1346,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (state.dialog) app.dialogCancel();
+      else if (state.breakdown) app.closeBreakdown();
       else if (state.showSettings) app.closeSettings();
     }
   });
