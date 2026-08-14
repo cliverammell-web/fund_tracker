@@ -53,8 +53,10 @@
   button.ghost:hover { background: #eef0f7; }
   button.danger { background: transparent; color: var(--red); border: 1px solid #f0d3d1; }
   button.danger:hover { background: #fbeceb; }
+  button.danger-solid { background: var(--red); color: #fff; }
+  button.danger-solid:hover { background: #9a1e17; }
   button.small { padding: 5px 10px; font-size: 0.8rem; border-radius: 6px; }
-  input, select {
+  input, select, textarea {
     font-family: inherit;
     font-size: 0.92rem;
     padding: 8px 10px;
@@ -64,7 +66,8 @@
     color: var(--text);
     width: 100%;
   }
-  input:focus, select:focus { outline: 2px solid var(--navy-light); outline-offset: -1px; }
+  textarea { resize: vertical; min-height: 72px; line-height: 1.4; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--navy-light); outline-offset: -1px; }
   label { font-size: 0.78rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; display: block; margin-bottom: 4px; }
 
   header {
@@ -281,6 +284,19 @@
     margin-bottom: 10px;
   }
   .modal-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .dialog-message { margin: 0 0 22px 0; color: var(--text); line-height: 1.5; }
+  .dialog-field { margin-bottom: 16px; }
+  .dialog-field:last-of-type { margin-bottom: 22px; }
+  .dialog-field label { margin-bottom: 6px; }
+  .dialog-field .field-error {
+    color: var(--red);
+    font-size: 0.78rem;
+    margin-top: 4px;
+    display: none;
+  }
+  .dialog-field.has-error input,
+  .dialog-field.has-error textarea { border-color: var(--red); }
+  .dialog-field.has-error .field-error { display: block; }
 
   @media (max-width: 560px) {
     .stat-card.hero .value { font-size: 1.6rem; }
@@ -301,6 +317,7 @@
 
 <main id="app"></main>
 <div id="modalRoot"></div>
+<div id="dialogRoot"></div>
 
 <script>
 (function () {
@@ -577,6 +594,7 @@
     data: loadData(),
     view: "overview", // "overview" | fund id
     showSettings: false,
+    dialog: null,
   };
 
   function findFund(id) {
@@ -588,12 +606,69 @@
   const tabsEl = document.getElementById("tabs");
   const mobileNavEl = document.getElementById("mobileNav");
   const modalRoot = document.getElementById("modalRoot");
+  const dialogRoot = document.getElementById("dialogRoot");
 
   function render() {
     renderTabs();
     if (state.view === "overview") renderOverview();
     else renderFund(state.view);
     renderSettingsModal();
+    renderDialog();
+  }
+
+  function renderDialog() {
+    if (!state.dialog) { dialogRoot.innerHTML = ""; return; }
+    const d = state.dialog;
+    const cancelBtn = d.cancelLabel === null ? "" :
+      `<button type="button" class="ghost" onclick="app.dialogCancel()">${escapeHtml(d.cancelLabel || "Cancel")}</button>`;
+
+    if (d.type === "confirm") {
+      const confirmClass = d.dangerous ? "danger-solid" : "primary";
+      dialogRoot.innerHTML = `
+        <div class="modal-backdrop" role="dialog" aria-modal="true" onclick="if(event.target===this) app.dialogCancel()">
+          <div class="modal">
+            <div class="modal-header">
+              <h2>${escapeHtml(d.title)}</h2>
+              <button class="modal-close" onclick="app.dialogCancel()" aria-label="Close">&times;</button>
+            </div>
+            <p class="dialog-message">${escapeHtml(d.message)}</p>
+            <div class="modal-actions" style="justify-content:flex-end;">
+              ${cancelBtn}
+              <button class="${confirmClass}" onclick="app.dialogConfirm()">${escapeHtml(d.confirmLabel || "OK")}</button>
+            </div>
+          </div>
+        </div>`;
+    } else if (d.type === "form") {
+      dialogRoot.innerHTML = `
+        <div class="modal-backdrop" role="dialog" aria-modal="true" onclick="if(event.target===this) app.dialogCancel()">
+          <div class="modal">
+            <div class="modal-header">
+              <h2>${escapeHtml(d.title)}</h2>
+              <button class="modal-close" onclick="app.dialogCancel()" aria-label="Close">&times;</button>
+            </div>
+            <form onsubmit="event.preventDefault(); app.dialogSubmit();">
+              ${d.fields.map((f) => `
+                <div class="dialog-field" id="dlg_wrap_${f.id}">
+                  <label for="dlg_${f.id}">${escapeHtml(f.label)}${f.required ? " *" : ""}</label>
+                  ${f.type === "textarea"
+                    ? `<textarea id="dlg_${f.id}" placeholder="${escapeHtml(f.placeholder || "")}" rows="3">${escapeHtml(f.value || "")}</textarea>`
+                    : `<input type="${escapeHtml(f.type || "text")}" id="dlg_${f.id}" value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.placeholder || "")}">`
+                  }
+                  <div class="field-error">Required</div>
+                </div>
+              `).join("")}
+              <div class="modal-actions" style="justify-content:flex-end;">
+                ${cancelBtn}
+                <button type="submit" class="primary">${escapeHtml(d.confirmLabel || "Save")}</button>
+              </div>
+            </form>
+          </div>
+        </div>`;
+      setTimeout(() => {
+        const first = dialogRoot.querySelector("input, textarea");
+        if (first) { first.focus(); if (first.select) first.select(); }
+      }, 30);
+    }
   }
 
   function renderSettingsModal() {
@@ -838,14 +913,77 @@
       render();
     },
 
-    addFund() {
-      const name = prompt("Fund name (e.g. \"Fidelity Global Index\"):");
-      if (!name || !name.trim()) return;
-      const provider = prompt("Provider / platform (e.g. \"Hargreaves Lansdown\") — optional:") || "";
+    askForm(opts) {
+      return new Promise((resolve) => {
+        state.dialog = Object.assign({ type: "form", resolve }, opts);
+        render();
+      });
+    },
+
+    askConfirm(opts) {
+      return new Promise((resolve) => {
+        state.dialog = Object.assign({ type: "confirm", resolve }, opts);
+        render();
+      });
+    },
+
+    askAlert(opts) {
+      return this.askConfirm(Object.assign({ cancelLabel: null, confirmLabel: "OK" }, opts));
+    },
+
+    dialogCancel() {
+      if (!state.dialog) return;
+      const resolve = state.dialog.resolve;
+      state.dialog = null;
+      render();
+      resolve(null);
+    },
+
+    dialogConfirm() {
+      if (!state.dialog || state.dialog.type !== "confirm") return;
+      const resolve = state.dialog.resolve;
+      state.dialog = null;
+      render();
+      resolve(true);
+    },
+
+    dialogSubmit() {
+      if (!state.dialog || state.dialog.type !== "form") return;
+      const values = {};
+      let hasError = false;
+      for (const f of state.dialog.fields) {
+        const el = document.getElementById("dlg_" + f.id);
+        const wrap = document.getElementById("dlg_wrap_" + f.id);
+        const val = (el.value || "").trim();
+        values[f.id] = val;
+        if (f.required && !val) {
+          wrap.classList.add("has-error");
+          hasError = true;
+        } else {
+          wrap.classList.remove("has-error");
+        }
+      }
+      if (hasError) return;
+      const resolve = state.dialog.resolve;
+      state.dialog = null;
+      render();
+      resolve(values);
+    },
+
+    async addFund() {
+      const values = await this.askForm({
+        title: "Add fund",
+        fields: [
+          { id: "name", label: "Fund name", required: true, placeholder: "e.g. Fidelity Global Index" },
+          { id: "provider", label: "Provider / platform", placeholder: "e.g. Hargreaves Lansdown" },
+        ],
+        confirmLabel: "Add fund",
+      });
+      if (!values) return;
       const fund = {
         id: uid(),
-        name: name.trim(),
-        provider: provider.trim(),
+        name: values.name,
+        provider: values.provider,
         notes: "",
         investments: [],
         valuations: [],
@@ -856,24 +994,36 @@
       render();
     },
 
-    editFund(id) {
+    async editFund(id) {
       const fund = findFund(id);
       if (!fund) return;
-      const name = prompt("Fund name:", fund.name);
-      if (name === null || !name.trim()) return;
-      const provider = prompt("Provider / platform:", fund.provider || "");
-      const notes = prompt("Notes (optional):", fund.notes || "");
-      fund.name = name.trim();
-      fund.provider = (provider || "").trim();
-      fund.notes = (notes || "").trim();
+      const values = await this.askForm({
+        title: "Edit fund details",
+        fields: [
+          { id: "name", label: "Fund name", required: true, value: fund.name },
+          { id: "provider", label: "Provider / platform", value: fund.provider, placeholder: "e.g. Hargreaves Lansdown" },
+          { id: "notes", label: "Notes", type: "textarea", value: fund.notes, placeholder: "e.g. tax wrapper, ticker, strategy notes" },
+        ],
+        confirmLabel: "Save changes",
+      });
+      if (!values) return;
+      fund.name = values.name;
+      fund.provider = values.provider;
+      fund.notes = values.notes;
       saveData();
       render();
     },
 
-    deleteFund(id) {
+    async deleteFund(id) {
       const fund = findFund(id);
       if (!fund) return;
-      if (!confirm(`Delete "${fund.name}" and all its investment records? This cannot be undone.`)) return;
+      const ok = await this.askConfirm({
+        title: "Delete fund",
+        message: `Delete "${fund.name}" along with all its investments and valuations? This cannot be undone.`,
+        confirmLabel: "Delete fund",
+        dangerous: true,
+      });
+      if (!ok) return;
       state.data.funds = state.data.funds.filter((f) => f.id !== id);
       saveData();
       state.view = "overview";
@@ -898,10 +1048,18 @@
       render();
     },
 
-    deleteInvestment(fundId, invId) {
+    async deleteInvestment(fundId, invId) {
       const fund = findFund(fundId);
       if (!fund) return;
-      if (!confirm("Delete this investment record?")) return;
+      const inv = fund.investments.find((i) => i.id === invId);
+      if (!inv) return;
+      const ok = await this.askConfirm({
+        title: "Delete investment",
+        message: `Delete the ${fmtMoney(inv.amount)} investment from ${fmtDate(inv.date)}?`,
+        confirmLabel: "Delete",
+        dangerous: true,
+      });
+      if (!ok) return;
       fund.investments = fund.investments.filter((i) => i.id !== invId);
       saveData();
       render();
@@ -925,10 +1083,18 @@
       render();
     },
 
-    deleteValuation(fundId, valId) {
+    async deleteValuation(fundId, valId) {
       const fund = findFund(fundId);
       if (!fund) return;
-      if (!confirm("Delete this valuation record?")) return;
+      const val = (fund.valuations || []).find((v) => v.id === valId);
+      if (!val) return;
+      const ok = await this.askConfirm({
+        title: "Delete valuation",
+        message: `Delete the ${fmtMoney(val.value)} valuation from ${fmtDate(val.date)}?`,
+        confirmLabel: "Delete",
+        dangerous: true,
+      });
+      if (!ok) return;
       fund.valuations = (fund.valuations || []).filter((v) => v.id !== valId);
       saveData();
       render();
@@ -967,11 +1133,18 @@
       const file = evt.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = () => {
+      const self = this;
+      reader.onload = async () => {
         try {
           const parsed = JSON.parse(reader.result);
           if (!parsed.funds || !Array.isArray(parsed.funds)) throw new Error("Invalid file format.");
-          if (!confirm("This will replace all current data with the imported backup. Continue?")) return;
+          const ok = await self.askConfirm({
+            title: "Replace all data?",
+            message: "This will replace all current data with the imported backup. This cannot be undone.",
+            confirmLabel: "Replace data",
+            dangerous: true,
+          });
+          if (!ok) { evt.target.value = ""; return; }
           state.data = parsed;
           if (!state.data.currency) state.data.currency = "£";
           saveData();
@@ -979,7 +1152,10 @@
           state.showSettings = false;
           render();
         } catch (e) {
-          alert("Could not read that file as a Fund Tracker backup: " + e.message);
+          await self.askAlert({
+            title: "Import failed",
+            message: "Could not read that file as a Fund Tracker backup: " + e.message,
+          });
         }
         evt.target.value = "";
       };
@@ -994,7 +1170,10 @@
   }
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && state.showSettings) app.closeSettings();
+    if (e.key === "Escape") {
+      if (state.dialog) app.dialogCancel();
+      else if (state.showSettings) app.closeSettings();
+    }
   });
 
   window.app = app;
