@@ -368,7 +368,10 @@
 <header>
   <div class="titlebar">
     <h1>Fund Tracker<span class="sub">Investment record &amp; annualised return</span></h1>
-    <button class="ghost" style="color:#fff;border-color:rgba(255,255,255,0.4)" onclick="app.openSettings()">⚙</button>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span id="syncPill" class="sync-pill" onclick="app.syncNow()" title="Cloud sync"></span>
+      <button class="ghost" style="color:#fff;border-color:rgba(255,255,255,0.4)" onclick="app.openSettings()">⚙</button>
+    </div>
   </div>
   <nav class="tabs" id="tabs"></nav>
   <div class="mobile-nav" id="mobileNav"></div>
@@ -379,6 +382,25 @@
 <div id="dialogRoot"></div>
 <div id="breakdownRoot"></div>
 
+<style>
+.sync-pill{
+  display:none; align-items:center; gap:5px; cursor:pointer;
+  font-size:11px; line-height:1; letter-spacing:.02em;
+  padding:5px 9px; border-radius:999px; white-space:nowrap;
+  background:rgba(255,255,255,0.14); color:#fff;
+  border:1px solid rgba(255,255,255,0.28); user-select:none;
+}
+.sync-pill.on{display:inline-flex;}
+.sync-pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto;}
+.sync-pill.s-idle{color:#b8f0c8;}
+.sync-pill.s-syncing{color:#ffe9a8;}
+.sync-pill.s-error{color:#ffc2c2;border-color:rgba(255,120,120,0.55);}
+.sync-pill.s-offline{color:#d8d8d8;}
+.sync-pill.s-pending{color:#ffe9a8;}
+@keyframes syncspin{0%{opacity:.35}50%{opacity:1}100%{opacity:.35}}
+.sync-pill.s-syncing::before{animation:syncspin 1s ease-in-out infinite;}
+.sync-status-line{font-size:13px;color:var(--muted,#667);margin:4px 0 12px;}
+</style>
 <script>
 (function () {
   "use strict";
@@ -386,35 +408,51 @@
   const STORAGE_KEY = "fundTrackerData";
 
   // ---------- Data layer ----------
+  /**
+   * Bring any document — from localStorage, an imported file, or the sync
+   * server — up to the shape the rest of the app expects. Anything that
+   * becomes state.data must pass through here.
+   */
+  function normaliseData(parsed) {
+    if (!parsed || typeof parsed !== "object") return { funds: [], currency: "£" };
+    if (!parsed.currency) parsed.currency = "£";
+    if (!Array.isArray(parsed.funds)) parsed.funds = [];
+    parsed.funds.forEach((fund) => {
+      if (!fund.id) fund.id = uid();
+      if (!Array.isArray(fund.investments)) fund.investments = [];
+      if (!Array.isArray(fund.valuations)) fund.valuations = [];
+      // Migrate legacy single currentValue/valuationDate into valuations[] history
+      if (typeof fund.currentValue === "number" && fund.valuations.length === 0) {
+        fund.valuations.push({
+          id: uid(),
+          date: fund.valuationDate || todayStr(),
+          value: fund.currentValue,
+        });
+      }
+      delete fund.currentValue;
+      delete fund.valuationDate;
+    });
+    return parsed;
+  }
+
   function loadData() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return { funds: [], currency: "£" };
-      const parsed = JSON.parse(raw);
-      if (!parsed.currency) parsed.currency = "£";
-      if (!parsed.funds) parsed.funds = [];
-      // Migrate legacy single currentValue/valuationDate into valuations[] history
-      parsed.funds.forEach((fund) => {
-        if (!Array.isArray(fund.valuations)) fund.valuations = [];
-        if (typeof fund.currentValue === "number" && fund.valuations.length === 0) {
-          fund.valuations.push({
-            id: uid(),
-            date: fund.valuationDate || todayStr(),
-            value: fund.currentValue,
-          });
-        }
-        delete fund.currentValue;
-        delete fund.valuationDate;
-      });
-      return parsed;
+      return normaliseData(JSON.parse(raw));
     } catch (e) {
       console.error("Failed to load data", e);
       return { funds: [], currency: "£" };
     }
   }
 
-  function saveData() {
+  function saveData(opts) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+    // Any local mutation marks the document dirty and schedules a push.
+    // opts.fromServer is set when we are writing data we just pulled down.
+    if (!(opts && opts.fromServer) && typeof sync !== "undefined" && sync.enabled()) {
+      sync.markDirty();
+    }
   }
 
   function uid() {
@@ -662,6 +700,299 @@
     return state.data.funds.find((f) => f.id === id);
   }
 
+  // ---------- Cloud sync ----------
+  // Whole-document sync with optimistic concurrency. The server holds one row
+  // per document with an integer revision. We push our data quoting the
+  // revision we last saw; a mismatch means another device got there first and
+  // we ask the user which copy wins.
+  const SYNC_KEY = "fundTrackerSync";
+  const DOC_KEY = "fund-tracker";
+  const PUSH_DEBOUNCE_MS = 1500;
+  const PULL_THROTTLE_MS = 10000;
+
+  const sync = {
+    cfg: null,
+    status: "off",      // off | idle | syncing | pending | error | offline
+    detail: "",
+    pushTimer: null,
+    lastPull: 0,
+    busy: false,
+    resolving: false,
+
+    load() {
+      try {
+        const raw = localStorage.getItem(SYNC_KEY);
+        this.cfg = raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        this.cfg = null;
+      }
+      if (this.cfg) {
+        if (!this.cfg.device) this.cfg.device = "dev-" + uid().slice(0, 6);
+        if (typeof this.cfg.rev !== "number") this.cfg.rev = 0;
+        if (typeof this.cfg.dirty !== "boolean") this.cfg.dirty = false;
+        this.persist();
+      }
+      this.status = this.enabled() ? (this.cfg.dirty ? "pending" : "idle") : "off";
+    },
+
+    persist() {
+      if (this.cfg) localStorage.setItem(SYNC_KEY, JSON.stringify(this.cfg));
+      else localStorage.removeItem(SYNC_KEY);
+    },
+
+    enabled() {
+      return !!(this.cfg && this.cfg.url && this.cfg.token);
+    },
+
+    endpoint() {
+      return this.cfg.url.replace(/\/+$/, "") + "/v1/doc/" + DOC_KEY;
+    },
+
+    setStatus(status, detail) {
+      this.status = status;
+      this.detail = detail || "";
+      renderSyncPill();
+      if (state.showSettings) renderSettingsModal();
+    },
+
+    connect(url, token) {
+      this.cfg = {
+        url: String(url || "").trim(),
+        token: String(token || "").trim(),
+        device: (this.cfg && this.cfg.device) || ("dev-" + uid().slice(0, 6)),
+        rev: 0,
+        // An empty app has nothing worth pushing, so a newly added device
+        // pulls the cloud copy down cleanly instead of raising a conflict.
+        dirty: ((state.data && state.data.funds) || []).length > 0,
+      };
+      this.persist();
+      this.setStatus("idle", "");
+    },
+
+    disconnect() {
+      this.cfg = null;
+      this.persist();
+      this.setStatus("off", "");
+    },
+
+    markDirty() {
+      if (!this.enabled()) return;
+      this.cfg.dirty = true;
+      this.persist();
+      this.setStatus("pending", "Unsaved changes");
+      clearTimeout(this.pushTimer);
+      this.pushTimer = setTimeout(() => this.push(), PUSH_DEBOUNCE_MS);
+    },
+
+    async request(method, body) {
+      const res = await fetch(this.endpoint(), {
+        method,
+        headers: {
+          "Authorization": "Bearer " + this.cfg.token,
+          "Content-Type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        cache: "no-store",
+      });
+      let payload = null;
+      try { payload = await res.json(); } catch (e) { payload = null; }
+      return { ok: res.ok, status: res.status, payload };
+    },
+
+    /** Pull the server copy. Adopts it if we have nothing unsent. */
+    async pull(opts) {
+      if (!this.enabled() || this.busy || this.resolving) return;
+      const force = opts && opts.force;
+      if (!force && Date.now() - this.lastPull < PULL_THROTTLE_MS) return;
+      if (!navigator.onLine) { this.setStatus("offline", "No connection"); return; }
+
+      this.busy = true;
+      this.lastPull = Date.now();
+      this.setStatus("syncing", "Checking…");
+      try {
+        const res = await this.request("GET");
+
+        if (res.status === 401) { this.fail("Token rejected"); return; }
+
+        if (res.status === 404) {
+          // Nothing on the server yet — our copy becomes the first revision.
+          this.cfg.rev = 0;
+          this.cfg.dirty = true;
+          this.persist();
+          this.busy = false;
+          await this.push();
+          return;
+        }
+
+        if (!res.ok) { this.fail("Server error " + res.status); return; }
+
+        const serverRev = res.payload.rev;
+
+        if (serverRev === this.cfg.rev) {
+          if (this.cfg.dirty) { this.busy = false; await this.push(); return; }
+          this.settle("Up to date");
+          return;
+        }
+
+        if (serverRev > this.cfg.rev && !this.cfg.dirty) {
+          this.adopt(res.payload);
+          this.settle("Updated from server");
+          return;
+        }
+
+        if (serverRev > this.cfg.rev && this.cfg.dirty) {
+          // If there is nothing local to lose, take the server copy quietly.
+          if (((state.data && state.data.funds) || []).length === 0) {
+            this.adopt(res.payload);
+            this.settle("Updated from server");
+            return;
+          }
+          this.busy = false;
+          await this.resolveConflict(res.payload);
+          return;
+        }
+
+        // Server is behind us (restored from backup, say) — push over it.
+        this.cfg.rev = serverRev;
+        this.cfg.dirty = true;
+        this.persist();
+        this.busy = false;
+        await this.push();
+      } catch (e) {
+        this.fail(navigator.onLine ? "Could not reach server" : "No connection");
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    /** Send our copy up, if it has changed. */
+    async push() {
+      if (!this.enabled() || this.busy || this.resolving) return;
+      if (!this.cfg.dirty) { this.settle("Up to date"); return; }
+      if (!navigator.onLine) { this.setStatus("offline", "Will sync when back online"); return; }
+
+      this.busy = true;
+      this.setStatus("syncing", "Saving…");
+      try {
+        const res = await this.request("PUT", {
+          baseRev: this.cfg.rev,
+          data: state.data,
+          device: this.cfg.device,
+        });
+
+        if (res.status === 401) { this.fail("Token rejected"); return; }
+
+        if (res.status === 409 && res.payload && res.payload.data) {
+          this.busy = false;
+          await this.resolveConflict(res.payload);
+          return;
+        }
+
+        if (!res.ok) { this.fail("Server error " + res.status); return; }
+
+        this.cfg.rev = res.payload.rev;
+        this.cfg.dirty = false;
+        this.cfg.lastSync = new Date().toISOString();
+        this.persist();
+        this.settle("Saved to cloud");
+      } catch (e) {
+        this.fail(navigator.onLine ? "Could not reach server" : "No connection");
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    /** Overwrite local data with a server payload. */
+    adopt(payload) {
+      state.data = normaliseData(payload.data);
+      this.cfg.rev = payload.rev;
+      this.cfg.dirty = false;
+      this.cfg.lastSync = new Date().toISOString();
+      this.persist();
+      saveData({ fromServer: true });
+      if (state.view !== "overview" && !findFund(state.view)) state.view = "overview";
+      render();
+    },
+
+    /** Both sides changed. Ask which one wins — never merge silently. */
+    async resolveConflict(serverPayload) {
+      if (this.resolving) return;
+      this.resolving = true;
+      this.setStatus("pending", "Conflict — choose a copy");
+
+      const when = serverPayload.updated
+        ? new Date(serverPayload.updated).toLocaleString()
+        : "unknown time";
+      const serverFunds = (serverPayload.data && serverPayload.data.funds || []).length;
+      const localFunds = (state.data.funds || []).length;
+
+      const keepLocal = await app.askConfirm({
+        title: "Two versions have diverged",
+        message:
+          "This device and the cloud copy have both changed since they were last in step.\n\n" +
+          "This device: " + localFunds + " fund" + (localFunds === 1 ? "" : "s") + ", changed here.\n" +
+          "Cloud copy: " + serverFunds + " fund" + (serverFunds === 1 ? "" : "s") + ", saved " + when + ".\n\n" +
+          "Whichever you discard cannot be recovered, so export a backup first if you are unsure.",
+        confirmLabel: "Keep this device",
+        cancelLabel: "Use cloud copy",
+      });
+
+      this.resolving = false;
+
+      if (keepLocal) {
+        // Re-base onto the server's revision, then push over it.
+        this.cfg.rev = serverPayload.rev;
+        this.cfg.dirty = true;
+        this.persist();
+        await this.push();
+      } else {
+        this.adopt(serverPayload);
+        this.settle("Using cloud copy");
+      }
+    },
+
+    settle(detail) {
+      this.setStatus(this.cfg && this.cfg.dirty ? "pending" : "idle", detail);
+    },
+
+    fail(detail) {
+      this.setStatus("error", detail);
+    },
+
+    describe() {
+      if (!this.enabled()) return "Not connected.";
+      const last = this.cfg.lastSync
+        ? "Last sync " + new Date(this.cfg.lastSync).toLocaleString() + "."
+        : "Not yet synced.";
+      const base = {
+        idle: "Connected.",
+        pending: "Changes waiting to be sent.",
+        syncing: "Syncing…",
+        error: "Problem: " + this.detail + ".",
+        offline: "Offline — will sync when the connection returns.",
+        off: "Not connected.",
+      }[this.status] || "Connected.";
+      return base + " " + last + " Revision " + this.cfg.rev + ".";
+    },
+  };
+
+  function renderSyncPill() {
+    const el = document.getElementById("syncPill");
+    if (!el) return;
+    if (!sync.enabled()) { el.className = "sync-pill"; el.textContent = ""; return; }
+    const label = {
+      idle: "Synced",
+      pending: "Pending",
+      syncing: "Syncing",
+      error: "Sync error",
+      offline: "Offline",
+    }[sync.status] || "Sync";
+    el.className = "sync-pill on s-" + sync.status;
+    el.textContent = label;
+    el.title = sync.describe();
+  }
+
+
   // ---------- Rendering ----------
   const appEl = document.getElementById("app");
   const tabsEl = document.getElementById("tabs");
@@ -852,8 +1183,33 @@
           </div>
 
           <div class="modal-section">
+            <h3>Cloud sync</h3>
+            <p class="sync-status-line">${escapeHtml(sync.describe())}</p>
+            ${sync.enabled() ? `
+              <div class="modal-actions">
+                <button class="ghost" onclick="app.syncNow()">Sync now</button>
+                <button class="ghost" onclick="app.disconnectSync()">Disconnect</button>
+              </div>
+            ` : `
+              <p class="muted-note" style="margin-top:0;margin-bottom:12px;">Enter the address of your sync worker and the device token. You only need to do this once per device.</p>
+              <div class="field">
+                <label for="syncUrl">Worker URL</label>
+                <input type="url" id="syncUrl" placeholder="https://crapps-sync.your-name.workers.dev" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="field" style="margin-top:8px;">
+                <label for="syncToken">Device token</label>
+                <input type="password" id="syncToken" placeholder="Paste token" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="modal-actions" style="margin-top:12px;">
+                <button class="primary" onclick="app.connectSync()">Connect</button>
+              </div>
+            `}
+            <div class="err" id="syncErr" style="display:none"></div>
+          </div>
+
+          <div class="modal-section">
             <h3>Backup &amp; restore</h3>
-            <p class="muted-note" style="margin-top:0;margin-bottom:12px;">Your data lives only in this browser. Export a backup regularly, and use Import to bring data across when you move to a new browser, device, or hosted copy of this app.</p>
+            <p class="muted-note" style="margin-top:0;margin-bottom:12px;">${sync.enabled() ? "Your data is synced to the cloud, so a cache clear is no longer destructive. Exports are still worth keeping as occasional archival snapshots." : "Your data lives only in this browser. Export a backup regularly, and use Import to bring data across when you move to a new browser, device, or hosted copy of this app."}</p>
             <div class="modal-actions">
               <button class="ghost" onclick="app.exportData()">Export backup (JSON)</button>
               <button class="ghost" onclick="document.getElementById('importFile').click()">Import backup</button>
@@ -1293,6 +1649,46 @@
       render();
     },
 
+    async connectSync() {
+      const urlEl = document.getElementById("syncUrl");
+      const tokenEl = document.getElementById("syncToken");
+      const errEl = document.getElementById("syncErr");
+      const url = (urlEl.value || "").trim();
+      const token = (tokenEl.value || "").trim();
+
+      if (!/^https:\/\/[^\s]+$/i.test(url)) {
+        showErr(errEl, "Enter the full worker URL, starting with https://");
+        return;
+      }
+      if (!token) { showErr(errEl, "Enter the device token."); return; }
+
+      sync.connect(url, token);
+      await sync.pull({ force: true });
+
+      if (sync.status === "error") {
+        showErr(errEl, sync.detail);
+        sync.disconnect();
+      }
+      renderSettingsModal();
+    },
+
+    async disconnectSync() {
+      const ok = await this.askConfirm({
+        title: "Disconnect sync?",
+        message: "This device will stop syncing. Your data stays in this browser, and the cloud copy is left untouched.",
+        confirmLabel: "Disconnect",
+      });
+      if (!ok) return;
+      sync.disconnect();
+      renderSettingsModal();
+    },
+
+    async syncNow() {
+      if (!sync.enabled()) { this.openSettings(); return; }
+      await sync.pull({ force: true });
+      await sync.push();
+    },
+
     exportData() {
       const blob = new Blob([JSON.stringify(state.data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -1319,8 +1715,7 @@
             dangerous: true,
           });
           if (!ok) { evt.target.value = ""; return; }
-          state.data = parsed;
-          if (!state.data.currency) state.data.currency = "£";
+          state.data = normaliseData(parsed);
           saveData();
           state.view = "overview";
           state.showSettings = false;
@@ -1352,7 +1747,32 @@
   });
 
   window.app = app;
+  sync.load();
   render();
+  renderSyncPill();
+
+  if (sync.enabled()) {
+    sync.pull({ force: true });
+  }
+
+  // Re-check when the app comes back to the foreground, and when the network returns.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && sync.enabled()) sync.pull();
+  });
+  window.addEventListener("online", () => {
+    if (sync.enabled()) sync.pull({ force: true });
+  });
+  window.addEventListener("offline", () => {
+    if (sync.enabled()) sync.setStatus("offline", "No connection");
+  });
+  // Last chance to flush a pending change before the tab closes.
+  window.addEventListener("pagehide", () => {
+    if (sync.enabled() && sync.cfg.dirty && navigator.sendBeacon) {
+      try {
+        sync.push();
+      } catch (e) {}
+    }
+  });
 
   // Register service worker for offline capability and installability
   if ('serviceWorker' in navigator) {
