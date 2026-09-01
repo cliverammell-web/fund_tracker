@@ -830,7 +830,12 @@
       this.status = status;
       this.detail = detail || "";
       renderSyncPill();
-      if (state.showSettings) renderSettingsModal();
+      // Only refresh the settings modal on transitions that change what it shows
+      // (connected vs disconnected). Re-rendering during a sync operation would
+      // rip out the input fields and error slot the user is looking at.
+      if (state.showSettings && (status === "off" || status === "idle")) {
+        renderSettingsModal();
+      }
     },
 
     connect(url, token) {
@@ -1939,8 +1944,19 @@
       await sync.pull({ force: true });
 
       if (sync.status === "error") {
-        showErr(errEl, sync.detail);
-        sync.disconnect();
+        const msg = sync.detail || "Could not reach worker";
+        sync.disconnect();               // wipes cfg, re-renders (safe: status becomes "off")
+        // Re-render happened, so grab the fresh error element
+        const freshErr = document.getElementById("syncErr");
+        if (freshErr) {
+          // Preserve what the user typed so they can fix a typo
+          const freshUrl = document.getElementById("syncUrl");
+          const freshToken = document.getElementById("syncToken");
+          if (freshUrl) freshUrl.value = url;
+          if (freshToken) freshToken.value = token;
+          showErr(freshErr, msg);
+        }
+        return;
       }
       renderSettingsModal();
     },
