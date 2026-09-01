@@ -1,7 +1,7 @@
 // Fund Tracker service worker
 // Bump CACHE_VERSION whenever any cached file (index.html, icons, manifest) changes,
 // so browsers pick up the new version automatically.
-const CACHE_VERSION = 'v7';
+const CACHE_VERSION = 'v8';
 const CACHE_NAME = 'fund-tracker-' + CACHE_VERSION;
 
 const ASSETS = [
