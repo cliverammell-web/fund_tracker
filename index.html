@@ -1341,11 +1341,11 @@
               <p class="muted-note" style="margin-top:0;margin-bottom:12px;">Enter the address of your sync worker and the device token. You only need to do this once per device.</p>
               <div class="field">
                 <label for="syncUrl">Worker URL</label>
-                <input type="url" id="syncUrl" placeholder="https://crapps-sync.your-name.workers.dev" autocomplete="off" spellcheck="false">
+                <input type="url" id="syncUrl" autocomplete="off" spellcheck="false">
               </div>
               <div class="field" style="margin-top:8px;">
                 <label for="syncToken">Device token</label>
-                <input type="password" id="syncToken" placeholder="Paste token" autocomplete="off" spellcheck="false">
+                <input type="password" id="syncToken" autocomplete="off" spellcheck="false">
               </div>
               <div class="modal-actions" style="margin-top:12px;">
                 <button class="primary" onclick="app.connectSync()">Connect</button>
@@ -1530,7 +1530,7 @@
         <div class="form-row">
           <div class="field">
             <label>Value</label>
-            <input type="number" step="0.01" id="valAmount" placeholder="e.g. 5230.00">
+            <input type="number" step="0.01" id="valAmount">
           </div>
           <div class="field">
             <label>As of date</label>
@@ -1565,15 +1565,15 @@
           </div>
           <div class="field">
             <label>Amount received</label>
-            <input type="number" step="0.01" id="dispAmount" placeholder="e.g. 5000.00">
+            <input type="number" step="0.01" id="dispAmount">
           </div>
           <div class="field">
             <label>Realised gain <span style="text-transform:none;font-weight:400;opacity:0.7;">(optional)</span></label>
-            <input type="number" step="0.01" id="dispGain" placeholder="e.g. 320.00">
+            <input type="number" step="0.01" id="dispGain">
           </div>
           <div class="field grow2">
             <label>Note (optional)</label>
-            <input type="text" id="dispNote" placeholder="e.g. partial sale, rebalance">
+            <input type="text" id="dispNote">
           </div>
           <div class="field" style="flex:0;">
             <button class="primary" onclick="app.addDisposal('${fund.id}')">Add</button>
@@ -1633,11 +1633,11 @@
           </div>
           <div class="field">
             <label>Amount</label>
-            <input type="number" step="0.01" id="invAmount" placeholder="e.g. 1000.00">
+            <input type="number" step="0.01" id="invAmount">
           </div>
           <div class="field grow2">
             <label>Note (optional)</label>
-            <input type="text" id="invNote" placeholder="e.g. monthly top-up">
+            <input type="text" id="invNote">
           </div>
           <div class="field" style="flex:0;">
             <button class="primary" onclick="app.addInvestment('${fund.id}')">Add</button>
@@ -1739,8 +1739,8 @@
       const values = await this.askForm({
         title: "Add fund",
         fields: [
-          { id: "name", label: "Fund name", required: true, placeholder: "e.g. Fidelity Global Index" },
-          { id: "provider", label: "Provider / platform", placeholder: "e.g. Hargreaves Lansdown" },
+          { id: "name", label: "Fund name", required: true },
+          { id: "provider", label: "Provider / platform" },
         ],
         confirmLabel: "Add fund",
       });
@@ -1767,8 +1767,8 @@
         title: "Edit fund details",
         fields: [
           { id: "name", label: "Fund name", required: true, value: fund.name },
-          { id: "provider", label: "Provider / platform", value: fund.provider, placeholder: "e.g. Hargreaves Lansdown" },
-          { id: "notes", label: "Notes", type: "textarea", value: fund.notes, placeholder: "e.g. tax wrapper, ticker, strategy notes" },
+          { id: "provider", label: "Provider / platform", value: fund.provider },
+          { id: "notes", label: "Notes", type: "textarea", value: fund.notes },
         ],
         confirmLabel: "Save changes",
       });
