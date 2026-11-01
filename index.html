@@ -203,6 +203,19 @@
   .stat-card.hero.clickable::after { color: rgba(255,255,255,0.65); }
   .stat-card .sub { font-size: 0.78rem; color: var(--text-muted); margin-top: 3px; }
   .stat-card.hero .sub { color: rgba(255,255,255,0.7); }
+
+  /* Multi-currency stacked lines inside a stat card */
+  .stat-card .multi-stack { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+  .stat-card .multi-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .stat-card .cur-tag {
+    font-size: 0.72rem; font-weight: 700; color: var(--text-muted);
+    background: #eef0f7; padding: 1px 7px; border-radius: 10px; min-width: 24px; text-align: center;
+    flex-shrink: 0;
+  }
+  .stat-card.hero .cur-tag { background: rgba(255,255,255,0.14); color: rgba(255,255,255,0.9); }
+  .stat-card .cur-val { font-size: 1.2rem; font-weight: 700; }
+  .stat-card.hero .cur-val { font-size: 1.4rem; }
+  .stat-card .cur-sub { font-size: 0.78rem; color: var(--text-muted); margin-left: auto; }
   .pos { color: var(--green); }
   .neg { color: var(--red); }
   .stat-card.hero .pos { color: #6fe3a5; }
@@ -346,12 +359,6 @@
     font-weight: 700;
     padding-top: 12px;
   }
-  .breakdown-table tr.year-subtotal-row td {
-    background: #f4f5f9;
-    border-top: 1px solid var(--border-strong);
-    font-size: 0.86rem;
-    padding: 10px 8px;
-  }
   .breakdown-hint { font-size: 0.78rem; color: var(--text-muted); margin: 12px 0 0 0; text-align: center; }
 
   @media (max-width: 500px) {
@@ -413,6 +420,14 @@
 
   const STORAGE_KEY = "fundTrackerData";
 
+  // Common currencies offered in the Add/Edit fund dialog. Each stores the symbol used for display.
+  // Extend here if a new currency is needed in the dropdown.
+  const CURRENCY_OPTIONS = [
+    { value: "€", label: "€  Euro (EUR)" },
+    { value: "£", label: "£  Pound Sterling (GBP)" },
+    { value: "$", label: "$  US Dollar (USD)" },
+  ];
+
   // ---------- Data layer ----------
   /**
    * Bring any document — from localStorage, an imported file, or the sync
@@ -427,7 +442,8 @@
       if (!fund.id) fund.id = uid();
       if (!Array.isArray(fund.investments)) fund.investments = [];
       if (!Array.isArray(fund.valuations)) fund.valuations = [];
-      if (!Array.isArray(fund.disposals)) fund.disposals = [];
+      // Per-fund currency: existing funds without one inherit the global default
+      if (!fund.currency) fund.currency = parsed.currency || "£";
       // Migrate legacy single currentValue/valuationDate into valuations[] history
       if (typeof fund.currentValue === "number" && fund.valuations.length === 0) {
         fund.valuations.push({
@@ -524,122 +540,86 @@
 
   function fundStats(fund) {
     const totalInvested = fund.investments.reduce((s, i) => s + i.amount, 0);
-    const disposals = fund.disposals || [];
-    const totalDisposed = disposals.reduce((s, d) => s + d.amount, 0);
-    const hasDisposals = disposals.length > 0;
     const latest = latestValuation(fund);
     const currentValue = latest ? latest.value : null;
     const valuationDate = latest ? latest.date : null;
-
-    // Overall gain = current value + everything you've taken out - everything you've put in
-    const gain = currentValue !== null ? currentValue + totalDisposed - totalInvested : null;
+    const gain = currentValue !== null ? currentValue - totalInvested : null;
     const gainPct = currentValue !== null && totalInvested > 0 ? (gain / totalInvested) * 100 : null;
-
-    // Realised gain per Spanish tax year (Jan–Dec), from user-entered gain on each disposal
-    const realisedByYear = {};
-    let realisedTotal = 0;
-    disposals.forEach((d) => {
-      if (typeof d.gain === "number" && !isNaN(d.gain)) {
-        const yr = (d.date || "").slice(0, 4);
-        if (yr) {
-          realisedByYear[yr] = (realisedByYear[yr] || 0) + d.gain;
-          realisedTotal += d.gain;
-        }
-      }
-    });
-
-    // Rate A — XIRR of every cash flow (contributions negative, disposals positive, current value positive)
-    let rateAll = null;
-    if (currentValue !== null && fund.investments.length > 0) {
-      const cfs = fund.investments.map((i) => ({ date: i.date, amount: -i.amount }));
-      disposals.forEach((d) => cfs.push({ date: d.date, amount: d.amount }));
-      cfs.push({ date: valuationDate || todayStr(), amount: currentValue });
-      const r = xirr(cfs);
-      if (r !== null) rateAll = r * 100;
-    }
-
-    // Rate B — "held-only" XIRR: contributions vs current value, ignoring disposals
-    let rateHeld = null;
+    let rate = null;
     if (currentValue !== null && fund.investments.length > 0) {
       const cfs = fund.investments.map((i) => ({ date: i.date, amount: -i.amount }));
       cfs.push({ date: valuationDate || todayStr(), amount: currentValue });
       const r = xirr(cfs);
-      if (r !== null) rateHeld = r * 100;
+      if (r !== null) rate = r * 100;
     }
-
-    return {
-      totalInvested, totalDisposed, hasDisposals,
-      currentValue, valuationDate,
-      gain, gainPct,
-      realisedByYear, realisedTotal,
-      rateAll, rateHeld,
-      // Back-compat alias for anything still reading `rate`
-      rate: rateAll,
-    };
+    return { totalInvested, currentValue, valuationDate, gain, gainPct, rate };
   }
 
   function portfolioStats(data) {
-    let totalInvested = 0, totalValue = 0, totalDisposed = 0;
-    let anyDisposals = false, anyValue = false;
-    const cfsAll = [], cfsHeld = [];
-    const realisedByYear = {};
-    let realisedTotal = 0;
+    // Group everything by currency. Mixing currencies in a single sum would be meaningless
+    // (€30k + £10k ≠ 40k of anything), so each currency keeps its own totals and XIRR.
+    const byCurrency = {};
+    const defaultCur = data.currency || "£";
+
+    function bucket(cur) {
+      if (!byCurrency[cur]) {
+        byCurrency[cur] = {
+          currency: cur,
+          totalInvested: 0, totalValue: 0,
+          anyValue: false, fundCount: 0,
+          cfs: [],
+        };
+      }
+      return byCurrency[cur];
+    }
 
     data.funds.forEach((fund) => {
+      const b = bucket(fund.currency || defaultCur);
+      b.fundCount++;
       fund.investments.forEach((i) => {
-        totalInvested += i.amount;
-        cfsAll.push({ date: i.date, amount: -i.amount });
-        cfsHeld.push({ date: i.date, amount: -i.amount });
-      });
-      (fund.disposals || []).forEach((d) => {
-        totalDisposed += d.amount;
-        anyDisposals = true;
-        cfsAll.push({ date: d.date, amount: d.amount });
-        if (typeof d.gain === "number" && !isNaN(d.gain)) {
-          const yr = (d.date || "").slice(0, 4);
-          if (yr) {
-            realisedByYear[yr] = (realisedByYear[yr] || 0) + d.gain;
-            realisedTotal += d.gain;
-          }
-        }
+        b.totalInvested += i.amount;
+        b.cfs.push({ date: i.date, amount: -i.amount });
       });
       const latest = latestValuation(fund);
       if (latest) {
-        totalValue += latest.value;
-        anyValue = true;
-        cfsAll.push({ date: latest.date, amount: latest.value });
-        cfsHeld.push({ date: latest.date, amount: latest.value });
+        b.totalValue += latest.value;
+        b.anyValue = true;
+        b.cfs.push({ date: latest.date, amount: latest.value });
       }
     });
 
-    const gain = anyValue ? totalValue + totalDisposed - totalInvested : null;
-    const gainPct = anyValue && totalInvested > 0 ? (gain / totalInvested) * 100 : null;
+    Object.values(byCurrency).forEach((b) => {
+      b.gain = b.anyValue ? b.totalValue - b.totalInvested : null;
+      b.gainPct = b.anyValue && b.totalInvested > 0 ? (b.gain / b.totalInvested) * 100 : null;
+      b.rate = null;
+      if (b.cfs.length > 0) {
+        const r = xirr(b.cfs);
+        if (r !== null) b.rate = r * 100;
+      }
+    });
 
-    let rateAll = null;
-    if (cfsAll.length > 0) {
-      const r = xirr(cfsAll);
-      if (r !== null) rateAll = r * 100;
-    }
-    let rateHeld = null;
-    if (cfsHeld.length > 0) {
-      const r = xirr(cfsHeld);
-      if (r !== null) rateHeld = r * 100;
-    }
+    // Currencies in use, biggest invested first
+    const currencies = Object.keys(byCurrency).sort((a, b) => byCurrency[b].totalInvested - byCurrency[a].totalInvested);
+    const multiCurrency = currencies.length > 1;
+    const anyValue = Object.values(byCurrency).some((b) => b.anyValue);
+    const primary = currencies.length > 0 ? byCurrency[currencies[0]] : null;
 
     return {
-      totalInvested, totalValue, totalDisposed,
-      anyDisposals, anyValue,
-      gain, gainPct,
-      realisedByYear, realisedTotal,
-      rateAll, rateHeld,
-      rate: rateAll,
+      byCurrency, currencies, multiCurrency, anyValue,
+      // Flat back-compat fields reflect the primary (biggest) currency only — safe only in single-currency portfolios
+      totalInvested: primary ? primary.totalInvested : 0,
+      totalValue: primary ? primary.totalValue : 0,
+      gain: primary ? primary.gain : null,
+      gainPct: primary ? primary.gainPct : null,
+      rate: primary ? primary.rate : null,
     };
   }
 
   // ---------- Formatting ----------
-  function fmtMoney(n) {
+  function fmtMoney(n, currency) {
     if (n === null || n === undefined || isNaN(n)) return "—";
-    return state.data.currency + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const cur = currency || state.data.currency || "£";
+    return cur + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
   function fmtPct(n) {
     if (n === null || n === undefined || isNaN(n)) return "—";
@@ -737,7 +717,7 @@
       valuePath += (i === 0 ? "M" : " L") + ` ${xPx(v.date)} ${yPx(v.value)}`;
     });
 
-    const cur = state.data.currency;
+    const cur = fund.currency || state.data.currency;
     const svg = `
       <svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible;">
         ${yTicks.map((v) => `
@@ -830,12 +810,7 @@
       this.status = status;
       this.detail = detail || "";
       renderSyncPill();
-      // Only refresh the settings modal on transitions that change what it shows
-      // (connected vs disconnected). Re-rendering during a sync operation would
-      // rip out the input fields and error slot the user is looking at.
-      if (state.showSettings && (status === "off" || status === "idle")) {
-        renderSettingsModal();
-      }
+      if (state.showSettings) renderSettingsModal();
     },
 
     connect(url, token) {
@@ -1129,6 +1104,8 @@
                   <label for="dlg_${f.id}">${escapeHtml(f.label)}${f.required ? " *" : ""}</label>
                   ${f.type === "textarea"
                     ? `<textarea id="dlg_${f.id}" placeholder="${escapeHtml(f.placeholder || "")}" rows="3">${escapeHtml(f.value || "")}</textarea>`
+                    : f.type === "select"
+                    ? `<select id="dlg_${f.id}">${(f.options || []).map((o) => `<option value="${escapeHtml(o.value)}" ${String(f.value || "") === String(o.value) ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}</select>`
                     : `<input type="${escapeHtml(f.type || "text")}" id="dlg_${f.id}" value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.placeholder || "")}">`
                   }
                   <div class="field-error">Required</div>
@@ -1152,140 +1129,133 @@
     if (!state.breakdown) { breakdownRoot.innerHTML = ""; return; }
     const type = state.breakdown;
     const funds = state.data.funds;
+    const defaultCur = state.data.currency || "£";
 
-    // Build a row per fund with the metric we care about
+    // Build a row per fund, remembering the fund's currency so each row knows how to format itself
     const rows = funds.map((f) => {
       const s = fundStats(f);
-      return { fund: f, stats: s };
+      return { fund: f, stats: s, cur: f.currency || defaultCur };
     });
 
+    // Group rows by currency; iterate groups in order of largest invested first
+    function groupByCurrency() {
+      const groups = {};
+      rows.forEach((r) => { (groups[r.cur] || (groups[r.cur] = [])).push(r); });
+      const order = Object.keys(groups).sort((a, b) =>
+        groups[b].reduce((s, r) => s + r.stats.totalInvested, 0) -
+        groups[a].reduce((s, r) => s + r.stats.totalInvested, 0)
+      );
+      return { groups, order, multi: order.length > 1 };
+    }
+
     let title = "", headers = "", body = "", totalRow = "";
+    const g = groupByCurrency();
+
+    // Section header shown above each currency group when the portfolio has more than one currency
+    const sectionHeader = (cur, cols) =>
+      g.multi ? `<tr class="year-subtotal-row"><td colspan="${cols}"><strong>${escapeHtml(cur)}</strong></td></tr>` : "";
 
     if (type === "invested") {
       title = "Total invested — breakdown";
-      const total = rows.reduce((sum, r) => sum + r.stats.totalInvested, 0);
-      const sorted = [...rows].sort((a, b) => b.stats.totalInvested - a.stats.totalInvested);
       headers = `<th>Fund</th><th class="num">Invested</th><th class="num">Share</th>`;
-      body = sorted.map((r) => {
-        const share = total > 0 ? (r.stats.totalInvested / total) * 100 : 0;
-        return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
-          <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
-          <td class="num">${fmtMoney(r.stats.totalInvested)}</td>
-          <td class="num">${share.toFixed(1)}%</td>
-        </tr>`;
+      body = g.order.map((cur) => {
+        const grp = g.groups[cur];
+        const grpTotal = grp.reduce((s, r) => s + r.stats.totalInvested, 0);
+        const sorted = [...grp].sort((a, b) => b.stats.totalInvested - a.stats.totalInvested);
+        const subtotal = g.multi
+          ? `<tr class="total-row"><td>${escapeHtml(cur)} subtotal</td><td class="num">${fmtMoney(grpTotal, cur)}</td><td class="num">100.0%</td></tr>`
+          : "";
+        return sectionHeader(cur, 3) + sorted.map((r) => {
+          const share = grpTotal > 0 ? (r.stats.totalInvested / grpTotal) * 100 : 0;
+          return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
+            <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
+            <td class="num">${fmtMoney(r.stats.totalInvested, r.cur)}</td>
+            <td class="num">${share.toFixed(1)}%</td>
+          </tr>`;
+        }).join("") + subtotal;
       }).join("");
-      totalRow = `<tr class="total-row"><td>Total</td><td class="num">${fmtMoney(total)}</td><td class="num">100.0%</td></tr>`;
+      if (!g.multi && g.order.length > 0) {
+        const only = g.order[0];
+        const total = g.groups[only].reduce((s, r) => s + r.stats.totalInvested, 0);
+        totalRow = `<tr class="total-row"><td>Total</td><td class="num">${fmtMoney(total, only)}</td><td class="num">100.0%</td></tr>`;
+      }
 
     } else if (type === "value") {
       title = "Current value — breakdown";
-      const withVal = rows.filter((r) => r.stats.currentValue !== null);
-      const total = withVal.reduce((sum, r) => sum + r.stats.currentValue, 0);
-      const sorted = [...rows].sort((a, b) => (b.stats.currentValue || 0) - (a.stats.currentValue || 0));
       headers = `<th>Fund</th><th class="num">Value</th><th class="num">Share</th>`;
-      body = sorted.map((r) => {
-        const hasVal = r.stats.currentValue !== null;
-        const share = hasVal && total > 0 ? (r.stats.currentValue / total) * 100 : null;
-        return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
-          <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
-          <td class="num">${hasVal ? fmtMoney(r.stats.currentValue) : "—"}</td>
-          <td class="num">${share !== null ? share.toFixed(1) + "%" : "—"}</td>
-        </tr>`;
+      body = g.order.map((cur) => {
+        const grp = g.groups[cur];
+        const withVal = grp.filter((r) => r.stats.currentValue !== null);
+        const grpTotal = withVal.reduce((s, r) => s + r.stats.currentValue, 0);
+        const sorted = [...grp].sort((a, b) => (b.stats.currentValue || 0) - (a.stats.currentValue || 0));
+        const subtotal = g.multi
+          ? `<tr class="total-row"><td>${escapeHtml(cur)} subtotal</td><td class="num">${fmtMoney(grpTotal, cur)}</td><td class="num">100.0%</td></tr>`
+          : "";
+        return sectionHeader(cur, 3) + sorted.map((r) => {
+          const hasVal = r.stats.currentValue !== null;
+          const share = hasVal && grpTotal > 0 ? (r.stats.currentValue / grpTotal) * 100 : null;
+          return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
+            <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
+            <td class="num">${hasVal ? fmtMoney(r.stats.currentValue, r.cur) : "—"}</td>
+            <td class="num">${share !== null ? share.toFixed(1) + "%" : "—"}</td>
+          </tr>`;
+        }).join("") + subtotal;
       }).join("");
-      totalRow = `<tr class="total-row"><td>Total</td><td class="num">${fmtMoney(total)}</td><td class="num">100.0%</td></tr>`;
+      if (!g.multi && g.order.length > 0) {
+        const only = g.order[0];
+        const total = g.groups[only].filter((r) => r.stats.currentValue !== null).reduce((s, r) => s + r.stats.currentValue, 0);
+        totalRow = `<tr class="total-row"><td>Total</td><td class="num">${fmtMoney(total, only)}</td><td class="num">100.0%</td></tr>`;
+      }
 
     } else if (type === "gain") {
       title = "Total gain — breakdown";
-      const withVal = rows.filter((r) => r.stats.gain !== null);
-      const totalGain = withVal.reduce((sum, r) => sum + r.stats.gain, 0);
-      const sorted = [...rows].sort((a, b) => (b.stats.gain === null ? -Infinity : b.stats.gain) - (a.stats.gain === null ? -Infinity : a.stats.gain));
       headers = `<th>Fund</th><th class="num">Gain</th><th class="num">Gain %</th>`;
-      body = sorted.map((r) => {
-        const g = r.stats.gain, gp = r.stats.gainPct;
-        return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
-          <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
-          <td class="num ${pctClass(g)}">${g !== null ? fmtMoney(g) : "—"}</td>
-          <td class="num ${pctClass(gp)}">${fmtPct(gp)}</td>
-        </tr>`;
+      body = g.order.map((cur) => {
+        const grp = g.groups[cur];
+        const withVal = grp.filter((r) => r.stats.gain !== null);
+        const grpGain = withVal.reduce((s, r) => s + r.stats.gain, 0);
+        const sorted = [...grp].sort((a, b) => (b.stats.gain === null ? -Infinity : b.stats.gain) - (a.stats.gain === null ? -Infinity : a.stats.gain));
+        const subtotal = g.multi
+          ? `<tr class="total-row"><td>${escapeHtml(cur)} subtotal</td><td class="num ${pctClass(grpGain)}">${fmtMoney(grpGain, cur)}</td><td></td></tr>`
+          : "";
+        return sectionHeader(cur, 3) + sorted.map((r) => {
+          const gain = r.stats.gain, gp = r.stats.gainPct;
+          return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
+            <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
+            <td class="num ${pctClass(gain)}">${gain !== null ? fmtMoney(gain, r.cur) : "—"}</td>
+            <td class="num ${pctClass(gp)}">${fmtPct(gp)}</td>
+          </tr>`;
+        }).join("") + subtotal;
       }).join("");
-      totalRow = `<tr class="total-row"><td>Total</td><td class="num ${pctClass(totalGain)}">${fmtMoney(totalGain)}</td><td></td></tr>`;
+      if (!g.multi && g.order.length > 0) {
+        const only = g.order[0];
+        const total = g.groups[only].filter((r) => r.stats.gain !== null).reduce((s, r) => s + r.stats.gain, 0);
+        totalRow = `<tr class="total-row"><td>Total</td><td class="num ${pctClass(total)}">${fmtMoney(total, only)}</td><td></td></tr>`;
+      }
 
     } else if (type === "xirr") {
       title = "Annualised return — breakdown";
-      const sorted = [...rows].sort((a, b) => (b.stats.rate === null ? -Infinity : b.stats.rate) - (a.stats.rate === null ? -Infinity : a.stats.rate));
-      headers = `<th>Fund</th><th class="num">Invested</th><th class="num">Return (XIRR)</th>`;
-      body = sorted.map((r) => {
-        return `<tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
-          <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
-          <td class="num">${fmtMoney(r.stats.totalInvested)}</td>
-          <td class="num ${pctClass(r.stats.rate)}">${fmtPct(r.stats.rate)}</td>
-        </tr>`;
-      }).join("");
       const p = portfolioStats(state.data);
-      totalRow = `<tr class="total-row"><td>Portfolio total</td><td class="num">${fmtMoney(p.totalInvested)}</td><td class="num ${pctClass(p.rate)}">${fmtPct(p.rate)}</td></tr>`;
-    } else if (type === "log") {
-      // Investment log — has its own table structure (year subtotals + rows), so render its own modal here and return.
-      const allInvestments = [];
-      funds.forEach((f) => {
-        f.investments.forEach((i) => {
-          allInvestments.push({ date: i.date, amount: i.amount, fundName: f.name, fundId: f.id });
-        });
-      });
-
-      if (allInvestments.length === 0) {
-        breakdownRoot.innerHTML = `
-          <div class="modal-backdrop" role="dialog" aria-modal="true" onclick="if(event.target===this) app.closeBreakdown()">
-            <div class="modal" style="max-width: 620px;">
-              <div class="modal-header">
-                <h2>Investment log</h2>
-                <button class="modal-close" onclick="app.closeBreakdown()" aria-label="Close">&times;</button>
-              </div>
-              <p class="muted-note">No investments recorded yet.</p>
-            </div>
-          </div>`;
-        return;
+      headers = `<th>Fund</th><th class="num">Invested</th><th class="num">Return (XIRR)</th>`;
+      body = g.order.map((cur) => {
+        const grp = g.groups[cur];
+        const sorted = [...grp].sort((a, b) => (b.stats.rate === null ? -Infinity : b.stats.rate) - (a.stats.rate === null ? -Infinity : a.stats.rate));
+        const b = p.byCurrency[cur];
+        const subtotal = g.multi
+          ? `<tr class="total-row"><td>${escapeHtml(cur)} subtotal</td><td class="num">${fmtMoney(b.totalInvested, cur)}</td><td class="num ${pctClass(b.rate)}">${fmtPct(b.rate)}</td></tr>`
+          : "";
+        return sectionHeader(cur, 3) + sorted.map((r) => `
+          <tr class="breakdown-row" onclick="app.gotoFromBreakdown('${r.fund.id}')">
+            <td><div class="fund-name-cell">${escapeHtml(r.fund.name)}</div>${r.fund.provider ? `<div class="fund-provider">${escapeHtml(r.fund.provider)}</div>` : ""}</td>
+            <td class="num">${fmtMoney(r.stats.totalInvested, r.cur)}</td>
+            <td class="num ${pctClass(r.stats.rate)}">${fmtPct(r.stats.rate)}</td>
+          </tr>`).join("") + subtotal;
+      }).join("");
+      if (!g.multi && g.order.length > 0) {
+        const only = g.order[0];
+        const b = p.byCurrency[only];
+        totalRow = `<tr class="total-row"><td>Portfolio total</td><td class="num">${fmtMoney(b.totalInvested, only)}</td><td class="num ${pctClass(b.rate)}">${fmtPct(b.rate)}</td></tr>`;
       }
-
-      allInvestments.sort((a, b) => new Date(b.date) - new Date(a.date));
-      const byYear = {};
-      allInvestments.forEach((inv) => {
-        const yr = inv.date.slice(0, 4);
-        if (!byYear[yr]) byYear[yr] = { total: 0, items: [] };
-        byYear[yr].total += inv.amount;
-        byYear[yr].items.push(inv);
-      });
-      const grandTotal = allInvestments.reduce((s, i) => s + i.amount, 0);
-      const years = Object.keys(byYear).sort((a, b) => b.localeCompare(a));
-
-      breakdownRoot.innerHTML = `
-        <div class="modal-backdrop" role="dialog" aria-modal="true" onclick="if(event.target===this) app.closeBreakdown()">
-          <div class="modal" style="max-width: 620px;">
-            <div class="modal-header">
-              <h2>Investment log</h2>
-              <button class="modal-close" onclick="app.closeBreakdown()" aria-label="Close">&times;</button>
-            </div>
-            <p class="muted-note" style="margin-top:0;">Every top-up you've made, grouped by tax year (Jan&ndash;Dec).</p>
-            <table class="breakdown-table" style="margin-top:8px;">
-              <thead><tr><th>Date</th><th>Fund</th><th class="num">Amount</th></tr></thead>
-              <tbody>
-                ${years.map((yr) => `
-                  <tr class="year-subtotal-row">
-                    <td colspan="2"><strong>${yr}</strong> &nbsp;<span style="color:var(--text-muted);font-weight:400;">${byYear[yr].items.length} top-up${byYear[yr].items.length === 1 ? "" : "s"}</span></td>
-                    <td class="num"><strong>${fmtMoney(byYear[yr].total)}</strong></td>
-                  </tr>
-                  ${byYear[yr].items.map((inv) => `
-                    <tr class="breakdown-row" onclick="app.gotoFromBreakdown('${inv.fundId}')">
-                      <td>${fmtDate(inv.date)}</td>
-                      <td>${escapeHtml(inv.fundName)}</td>
-                      <td class="num">${fmtMoney(inv.amount)}</td>
-                    </tr>`).join("")}
-                `).join("")}
-                <tr class="total-row"><td colspan="2"><strong>Grand total</strong></td><td class="num"><strong>${fmtMoney(grandTotal)}</strong></td></tr>
-              </tbody>
-            </table>
-            <p class="breakdown-hint">Tap any row to open that fund.</p>
-          </div>
-        </div>`;
-      return;
     }
 
     breakdownRoot.innerHTML = `
@@ -1318,7 +1288,8 @@
           </div>
 
           <div class="modal-section">
-            <h3>Currency</h3>
+            <h3>Default currency for new funds</h3>
+            <p class="muted-note" style="margin-top:0;margin-bottom:10px;">Pre-selected in the Add fund dialog. Each fund keeps its own currency, so existing funds are unaffected.</p>
             <div class="form-row">
               <div class="field">
                 <input type="text" id="settingsCurrency" value="${escapeHtml(state.data.currency || "£")}" maxlength="3">
@@ -1341,11 +1312,11 @@
               <p class="muted-note" style="margin-top:0;margin-bottom:12px;">Enter the address of your sync worker and the device token. You only need to do this once per device.</p>
               <div class="field">
                 <label for="syncUrl">Worker URL</label>
-                <input type="url" id="syncUrl" autocomplete="off" spellcheck="false">
+                <input type="url" id="syncUrl" placeholder="https://crapps-sync.your-name.workers.dev" autocomplete="off" spellcheck="false">
               </div>
               <div class="field" style="margin-top:8px;">
                 <label for="syncToken">Device token</label>
-                <input type="password" id="syncToken" autocomplete="off" spellcheck="false">
+                <input type="password" id="syncToken" placeholder="Paste token" autocomplete="off" spellcheck="false">
               </div>
               <div class="modal-actions" style="margin-top:12px;">
                 <button class="primary" onclick="app.connectSync()">Connect</button>
@@ -1404,64 +1375,54 @@
 
     const p = portfolioStats(data);
 
+    // Build each stat card as a stack of per-currency lines when more than one currency is in use.
+    // In single-currency portfolios, this reduces to the familiar single-line card.
+    function multiLine(getLine) {
+      return p.currencies.map((cur) => getLine(p.byCurrency[cur])).join("");
+    }
+    const valueFontCls = p.multiCurrency ? "multi" : "";
+
     let html = `<div class="stat-grid">
       <div class="stat-card hero clickable" onclick="app.showBreakdown('xirr')">
         <div class="label">Grand total annualised return (XIRR)</div>
-        <div class="value ${pctClass(p.rateAll)}">${fmtPct(p.rateAll)}</div>
-        <div class="sub">${p.anyDisposals ? "Money-weighted, incl. disposals" : "Money-weighted, across all funds &amp; dates"}</div>
+        ${p.multiCurrency
+          ? `<div class="multi-stack">${multiLine((b) => `<div class="multi-line"><span class="cur-tag">${escapeHtml(b.currency)}</span><span class="cur-val ${pctClass(b.rate)}">${fmtPct(b.rate)}</span></div>`)}</div>`
+          : `<div class="value ${pctClass(p.rate)}">${fmtPct(p.rate)}</div>`}
+        <div class="sub">Money-weighted${p.multiCurrency ? ", per currency" : ", across all funds &amp; dates"}</div>
       </div>
       <div class="stat-card clickable" onclick="app.showBreakdown('invested')">
         <div class="label">Total invested</div>
-        <div class="value">${fmtMoney(p.totalInvested)}</div>
-        ${p.anyDisposals ? `<div class="sub">Disposed: ${fmtMoney(p.totalDisposed)}</div>` : ""}
+        ${p.multiCurrency
+          ? `<div class="multi-stack">${multiLine((b) => `<div class="multi-line"><span class="cur-tag">${escapeHtml(b.currency)}</span><span class="cur-val">${fmtMoney(b.totalInvested, b.currency)}</span></div>`)}</div>`
+          : `<div class="value">${fmtMoney(p.totalInvested, p.currencies[0])}</div>`}
       </div>
       <div class="stat-card clickable" onclick="app.showBreakdown('value')">
         <div class="label">Current value</div>
-        <div class="value">${p.anyValue ? fmtMoney(p.totalValue) : "—"}</div>
+        ${p.multiCurrency
+          ? `<div class="multi-stack">${multiLine((b) => `<div class="multi-line"><span class="cur-tag">${escapeHtml(b.currency)}</span><span class="cur-val">${b.anyValue ? fmtMoney(b.totalValue, b.currency) : "—"}</span></div>`)}</div>`
+          : `<div class="value">${p.anyValue ? fmtMoney(p.totalValue, p.currencies[0]) : "—"}</div>`}
       </div>
       <div class="stat-card clickable" onclick="app.showBreakdown('gain')">
-        <div class="label">${p.anyDisposals ? "Total gain (realised + unrealised)" : "Total gain"}</div>
-        <div class="value ${pctClass(p.gain)}">${p.anyValue ? fmtMoney(p.gain) : "—"}</div>
-        <div class="sub ${pctClass(p.gainPct)}">${fmtPct(p.gainPct)}</div>
+        <div class="label">Total gain</div>
+        ${p.multiCurrency
+          ? `<div class="multi-stack">${multiLine((b) => `<div class="multi-line"><span class="cur-tag">${escapeHtml(b.currency)}</span><span class="cur-val ${pctClass(b.gain)}">${b.anyValue ? fmtMoney(b.gain, b.currency) : "—"}</span><span class="cur-sub ${pctClass(b.gainPct)}">${fmtPct(b.gainPct)}</span></div>`)}</div>`
+          : `<div class="value ${pctClass(p.gain)}">${p.anyValue ? fmtMoney(p.gain, p.currencies[0]) : "—"}</div>
+             <div class="sub ${pctClass(p.gainPct)}">${fmtPct(p.gainPct)}</div>`}
       </div>
     </div>`;
 
-    // Portfolio-wide tax-year realised-gain summary (only if any disposals have a gain recorded)
-    if (Object.keys(p.realisedByYear).length > 0) {
-      html += `<div class="card">
-        <h2>Realised gains by tax year</h2>
-        <p class="muted-note">Sum of realised gains you've recorded on disposals across all funds. Spanish tax year runs Jan&ndash;Dec.</p>
-        <table>
-          <thead><tr><th>Tax year</th><th style="text-align:right">Realised gain</th></tr></thead>
-          <tbody>
-            ${Object.keys(p.realisedByYear).sort((a,b) => b.localeCompare(a)).map((yr) => `
-              <tr>
-                <td>${yr}</td>
-                <td class="num ${pctClass(p.realisedByYear[yr])}">${fmtMoney(p.realisedByYear[yr])}</td>
-              </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>`;
-    }
-
-    // Data prep for investment-log modal (rendered on demand via app.showBreakdown('log'))
-    const anyInvestments = data.funds.some((f) => f.investments.length > 0);
-
-    html += `<div class="card">
-      <div class="fund-header" style="margin-bottom:8px;">
-        <h2>Your funds</h2>
-        ${anyInvestments ? `<button class="ghost small" onclick="app.showBreakdown('log')">&#128203; Investment log</button>` : ""}
-      </div>`;
+    html += `<div class="card"><h2>Your funds</h2>`;
     data.funds.forEach((f) => {
       const s = fundStats(f);
+      const fcur = f.currency || state.data.currency;
       html += `<div class="fund-row" onclick="app.goto('${f.id}')">
         <div>
           <div class="fname">${escapeHtml(f.name)}</div>
-          <div class="fprovider">${escapeHtml(f.provider || "")}</div>
+          <div class="fprovider">${escapeHtml(f.provider || "")}${f.currency ? ` &middot; ${escapeHtml(f.currency)}` : ""}</div>
         </div>
         <div class="fstats">
-          <div class="rate ${pctClass(s.rateAll)}">${fmtPct(s.rateAll)}</div>
-          <div class="val">${fmtMoney(s.currentValue)} · invested ${fmtMoney(s.totalInvested)}</div>
+          <div class="rate ${pctClass(s.rate)}">${fmtPct(s.rate)}</div>
+          <div class="val">${fmtMoney(s.currentValue, fcur)} · invested ${fmtMoney(s.totalInvested, fcur)}</div>
         </div>
       </div>`;
     });
@@ -1474,15 +1435,15 @@
     const fund = findFund(id);
     if (!fund) { state.view = "overview"; renderOverview(); return; }
     const s = fundStats(fund);
+    const cur = fund.currency || state.data.currency;
     const sortedInv = [...fund.investments].sort((a, b) => new Date(a.date) - new Date(b.date));
     const sortedVals = [...(fund.valuations || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
-    const sortedDisps = [...(fund.disposals || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
 
     let html = `
       <div class="fund-header">
         <div class="titles">
           <h2>${escapeHtml(fund.name)}</h2>
-          <div class="provider">${escapeHtml(fund.provider || "No provider set")}</div>
+          <div class="provider">${escapeHtml(fund.provider || "No provider set")}${fund.currency ? ` &middot; ${escapeHtml(fund.currency)}` : ""}</div>
         </div>
         <div class="fund-actions">
           <button class="ghost small" onclick="app.editFund('${fund.id}')">Edit details</button>
@@ -1493,28 +1454,21 @@
 
       <div class="stat-grid">
         <div class="stat-card hero">
-          <div class="label">${s.hasDisposals ? "XIRR (all cash flows)" : "Annualised return (XIRR)"}</div>
-          <div class="value ${pctClass(s.rateAll)}">${fmtPct(s.rateAll)}</div>
+          <div class="label">Annualised return (XIRR)</div>
+          <div class="value ${pctClass(s.rate)}">${fmtPct(s.rate)}</div>
           <div class="sub">As of ${fmtDate(s.valuationDate)}</div>
         </div>
-        ${s.hasDisposals ? `
-        <div class="stat-card">
-          <div class="label">XIRR (held only)</div>
-          <div class="value ${pctClass(s.rateHeld)}">${fmtPct(s.rateHeld)}</div>
-          <div class="sub">Ignoring disposals</div>
-        </div>` : ""}
         <div class="stat-card">
           <div class="label">Total invested</div>
-          <div class="value">${fmtMoney(s.totalInvested)}</div>
-          ${s.hasDisposals ? `<div class="sub">Disposed: ${fmtMoney(s.totalDisposed)}</div>` : ""}
+          <div class="value">${fmtMoney(s.totalInvested, cur)}</div>
         </div>
         <div class="stat-card">
           <div class="label">Current value</div>
-          <div class="value">${s.currentValue !== null ? fmtMoney(s.currentValue) : "—"}</div>
+          <div class="value">${s.currentValue !== null ? fmtMoney(s.currentValue, cur) : "—"}</div>
         </div>
         <div class="stat-card">
-          <div class="label">${s.hasDisposals ? "Total gain (realised + unrealised)" : "Gain"}</div>
-          <div class="value ${pctClass(s.gain)}">${s.gain !== null ? fmtMoney(s.gain) : "—"}</div>
+          <div class="label">Gain</div>
+          <div class="value ${pctClass(s.gain)}">${s.gain !== null ? fmtMoney(s.gain, cur) : "—"}</div>
           <div class="sub ${pctClass(s.gainPct)}">${fmtPct(s.gainPct)}</div>
         </div>
       </div>
@@ -1529,8 +1483,8 @@
         <p class="muted-note">Each time you check the fund's value, add it here. The app keeps every valuation to build your growth chart, and uses the most recent one for the current value and annualised return.</p>
         <div class="form-row">
           <div class="field">
-            <label>Value</label>
-            <input type="number" step="0.01" id="valAmount">
+            <label>Value (${escapeHtml(cur)})</label>
+            <input type="number" step="0.01" id="valAmount" placeholder="e.g. 5230.00">
           </div>
           <div class="field">
             <label>As of date</label>
@@ -1548,65 +1502,11 @@
             ${sortedVals.map((v) => `
               <tr>
                 <td>${fmtDate(v.date)}</td>
-                <td class="num">${fmtMoney(v.value)}</td>
+                <td class="num">${fmtMoney(v.value, cur)}</td>
                 <td style="text-align:right"><button class="danger small" onclick="app.deleteValuation('${fund.id}','${v.id}')">Delete</button></td>
               </tr>`).join("")}
           </tbody>
         </table>`}
-      </div>
-
-      <div class="card">
-        <h2>Disposals</h2>
-        <p class="muted-note">Record each sale of units. Enter the realised gain (from your broker's contract note) if you'd like the tax-year summary to add it up.</p>
-        <div class="form-row">
-          <div class="field">
-            <label>Date</label>
-            <input type="date" id="dispDate" value="${todayStr()}">
-          </div>
-          <div class="field">
-            <label>Amount received</label>
-            <input type="number" step="0.01" id="dispAmount">
-          </div>
-          <div class="field">
-            <label>Realised gain <span style="text-transform:none;font-weight:400;opacity:0.7;">(optional)</span></label>
-            <input type="number" step="0.01" id="dispGain">
-          </div>
-          <div class="field grow2">
-            <label>Note (optional)</label>
-            <input type="text" id="dispNote">
-          </div>
-          <div class="field" style="flex:0;">
-            <button class="primary" onclick="app.addDisposal('${fund.id}')">Add</button>
-          </div>
-        </div>
-        <div class="err" id="dispErr"></div>
-        ${sortedDisps.length === 0 ? `<p class="muted-note" style="margin-top:14px;">No disposals recorded yet.</p>` : `
-        <table style="margin-top:14px;">
-          <thead><tr><th>Date</th><th>Note</th><th style="text-align:right">Received</th><th style="text-align:right">Gain</th><th></th></tr></thead>
-          <tbody>
-            ${sortedDisps.map((d) => `
-              <tr>
-                <td>${fmtDate(d.date)}</td>
-                <td>${escapeHtml(d.note || "")}</td>
-                <td class="num">${fmtMoney(d.amount)}</td>
-                <td class="num ${pctClass(d.gain)}">${typeof d.gain === "number" ? fmtMoney(d.gain) : "—"}</td>
-                <td style="text-align:right"><button class="danger small" onclick="app.deleteDisposal('${fund.id}','${d.id}')">Delete</button></td>
-              </tr>`).join("")}
-          </tbody>
-        </table>
-        ${Object.keys(s.realisedByYear).length > 0 ? `
-        <h3 style="margin-top:18px;">Realised gains by tax year</h3>
-        <table>
-          <thead><tr><th>Tax year (Jan&ndash;Dec)</th><th style="text-align:right">Realised gain</th></tr></thead>
-          <tbody>
-            ${Object.keys(s.realisedByYear).sort((a,b) => b.localeCompare(a)).map((yr) => `
-              <tr>
-                <td>${yr}</td>
-                <td class="num ${pctClass(s.realisedByYear[yr])}">${fmtMoney(s.realisedByYear[yr])}</td>
-              </tr>`).join("")}
-          </tbody>
-        </table>` : ""}
-        `}
       </div>
 
       <div class="card">
@@ -1619,7 +1519,7 @@
               <tr>
                 <td>${fmtDate(i.date)}</td>
                 <td>${escapeHtml(i.note || "")}</td>
-                <td class="num">${fmtMoney(i.amount)}</td>
+                <td class="num">${fmtMoney(i.amount, cur)}</td>
                 <td style="text-align:right"><button class="danger small" onclick="app.deleteInvestment('${fund.id}','${i.id}')">Delete</button></td>
               </tr>`).join("")}
           </tbody>
@@ -1632,12 +1532,12 @@
             <input type="date" id="invDate" value="${todayStr()}">
           </div>
           <div class="field">
-            <label>Amount</label>
-            <input type="number" step="0.01" id="invAmount">
+            <label>Amount (${escapeHtml(cur)})</label>
+            <input type="number" step="0.01" id="invAmount" placeholder="e.g. 1000.00">
           </div>
           <div class="field grow2">
             <label>Note (optional)</label>
-            <input type="text" id="invNote">
+            <input type="text" id="invNote" placeholder="e.g. monthly top-up">
           </div>
           <div class="field" style="flex:0;">
             <button class="primary" onclick="app.addInvestment('${fund.id}')">Add</button>
@@ -1736,11 +1636,13 @@
     },
 
     async addFund() {
+      const defaultCur = state.data.currency || "£";
       const values = await this.askForm({
         title: "Add fund",
         fields: [
-          { id: "name", label: "Fund name", required: true },
-          { id: "provider", label: "Provider / platform" },
+          { id: "name", label: "Fund name", required: true, placeholder: "e.g. Fidelity Global Index" },
+          { id: "provider", label: "Provider / platform", placeholder: "e.g. Hargreaves Lansdown" },
+          { id: "currency", label: "Currency", type: "select", value: defaultCur, options: CURRENCY_OPTIONS },
         ],
         confirmLabel: "Add fund",
       });
@@ -1749,10 +1651,10 @@
         id: uid(),
         name: values.name,
         provider: values.provider,
+        currency: values.currency || defaultCur,
         notes: "",
         investments: [],
         valuations: [],
-        disposals: [],
       };
       state.data.funds.push(fund);
       saveData();
@@ -1763,18 +1665,32 @@
     async editFund(id) {
       const fund = findFund(id);
       if (!fund) return;
+      const defaultCur = state.data.currency || "£";
+      const currentCur = fund.currency || defaultCur;
       const values = await this.askForm({
         title: "Edit fund details",
         fields: [
           { id: "name", label: "Fund name", required: true, value: fund.name },
-          { id: "provider", label: "Provider / platform", value: fund.provider },
-          { id: "notes", label: "Notes", type: "textarea", value: fund.notes },
+          { id: "provider", label: "Provider / platform", value: fund.provider, placeholder: "e.g. Hargreaves Lansdown" },
+          { id: "currency", label: "Currency", type: "select", value: currentCur, options: CURRENCY_OPTIONS },
+          { id: "notes", label: "Notes", type: "textarea", value: fund.notes, placeholder: "e.g. tax wrapper, ticker, strategy notes" },
         ],
         confirmLabel: "Save changes",
       });
       if (!values) return;
+      // Warn if currency is being changed on a fund with existing data
+      if (values.currency !== currentCur && (fund.investments.length > 0 || (fund.valuations || []).length > 0)) {
+        const ok = await this.askConfirm({
+          title: "Change currency?",
+          message: `This fund already has data recorded in ${currentCur}. Changing to ${values.currency} will relabel every existing amount — the numbers themselves won't be converted. Are you sure?`,
+          confirmLabel: "Change currency",
+          dangerous: true,
+        });
+        if (!ok) return;
+      }
       fund.name = values.name;
       fund.provider = values.provider;
+      fund.currency = values.currency || currentCur;
       fund.notes = values.notes;
       saveData();
       render();
@@ -1821,7 +1737,7 @@
       if (!inv) return;
       const ok = await this.askConfirm({
         title: "Delete investment",
-        message: `Delete the ${fmtMoney(inv.amount)} investment from ${fmtDate(inv.date)}?`,
+        message: `Delete the ${fmtMoney(inv.amount, fund.currency)} investment from ${fmtDate(inv.date)}?`,
         confirmLabel: "Delete",
         dangerous: true,
       });
@@ -1856,54 +1772,12 @@
       if (!val) return;
       const ok = await this.askConfirm({
         title: "Delete valuation",
-        message: `Delete the ${fmtMoney(val.value)} valuation from ${fmtDate(val.date)}?`,
+        message: `Delete the ${fmtMoney(val.value, fund.currency)} valuation from ${fmtDate(val.date)}?`,
         confirmLabel: "Delete",
         dangerous: true,
       });
       if (!ok) return;
       fund.valuations = (fund.valuations || []).filter((v) => v.id !== valId);
-      saveData();
-      render();
-    },
-
-    addDisposal(fundId) {
-      const fund = findFund(fundId);
-      if (!fund) return;
-      const dateEl = document.getElementById("dispDate");
-      const amountEl = document.getElementById("dispAmount");
-      const gainEl = document.getElementById("dispGain");
-      const noteEl = document.getElementById("dispNote");
-      const errEl = document.getElementById("dispErr");
-      const date = dateEl.value;
-      const amount = parseFloat(amountEl.value);
-      const gainRaw = gainEl.value.trim();
-      const gain = gainRaw === "" ? null : parseFloat(gainRaw);
-
-      if (!date) { showErr(errEl, "Please enter a date."); return; }
-      if (isNaN(amount) || amount <= 0) { showErr(errEl, "Please enter an amount greater than 0."); return; }
-      if (gainRaw !== "" && isNaN(gain)) { showErr(errEl, "Realised gain must be a number (or leave blank)."); return; }
-
-      if (!Array.isArray(fund.disposals)) fund.disposals = [];
-      const entry = { id: uid(), date, amount, note: noteEl.value.trim() };
-      if (gain !== null) entry.gain = gain;
-      fund.disposals.push(entry);
-      saveData();
-      render();
-    },
-
-    async deleteDisposal(fundId, dispId) {
-      const fund = findFund(fundId);
-      if (!fund) return;
-      const disp = (fund.disposals || []).find((d) => d.id === dispId);
-      if (!disp) return;
-      const ok = await this.askConfirm({
-        title: "Delete disposal",
-        message: `Delete the ${fmtMoney(disp.amount)} disposal from ${fmtDate(disp.date)}?`,
-        confirmLabel: "Delete",
-        dangerous: true,
-      });
-      if (!ok) return;
-      fund.disposals = (fund.disposals || []).filter((d) => d.id !== dispId);
       saveData();
       render();
     },
@@ -1944,19 +1818,8 @@
       await sync.pull({ force: true });
 
       if (sync.status === "error") {
-        const msg = sync.detail || "Could not reach worker";
-        sync.disconnect();               // wipes cfg, re-renders (safe: status becomes "off")
-        // Re-render happened, so grab the fresh error element
-        const freshErr = document.getElementById("syncErr");
-        if (freshErr) {
-          // Preserve what the user typed so they can fix a typo
-          const freshUrl = document.getElementById("syncUrl");
-          const freshToken = document.getElementById("syncToken");
-          if (freshUrl) freshUrl.value = url;
-          if (freshToken) freshToken.value = token;
-          showErr(freshErr, msg);
-        }
-        return;
+        showErr(errEl, sync.detail);
+        sync.disconnect();
       }
       renderSettingsModal();
     },
